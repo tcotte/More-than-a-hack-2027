@@ -47,14 +47,17 @@ from kloppy import metrica  # noqa: E402
 
 import games  # noqa: E402
 import load_homography  # noqa: E402
+from possession_model import PITCH_LENGTH, PITCH_WIDTH, PossessionModel, is_valid  # noqa: E402
 
 # BGR
 HOME_COLOUR, AWAY_COLOUR, BALL_COLOUR = (40, 39, 214), (180, 119, 31), (0, 255, 255)
+
 # The SORT-style ball track (from detections alone, no ATD ground truth) is drawn in magenta.
 TRACK_COLOUR = (255, 0, 255)
 # Metres, same as utils.plot_frame.
 PITCH_LENGTH, PITCH_WIDTH = 105.0, 68.0
 # START = 11190
+
 START = 11190
 DEFAULT_FRAMES = [i + START for i in range(100)]
 DEFAULT_DETECTIONS = os.path.join(HERE, "../assets/ball_detection.csv")
@@ -76,11 +79,6 @@ def draw_ball_track(image, point):
     cv2.circle(image, centre, 4, TRACK_COLOUR, -1, cv2.LINE_AA)
     cv2.putText(image, label, (centre[0] + 6, centre[1] - 6),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, TRACK_COLOUR, 1, cv2.LINE_AA)
-
-
-def is_valid(point):
-    return (point is not None and point.x is not None and point.y is not None
-            and not np.isnan(point.x) and not np.isnan(point.y))
 
 
 class BirdsEye:
@@ -207,8 +205,9 @@ def draw_pitch_outline(image, matrix):
              (255, 255, 255), 1)
 
 
-def annotate(image, tracking_frame, matrix, home_team, video_frame, ball_track=None):
-    draw_pitch_outline(image, matrix)
+
+def annotate(image, tracking_frame, matrix, home_team, video_frame, ball_track=None, highlight_player=None):
+
 
     for player, position in tracking_frame.players_coordinates.items():
         if not is_valid(position):
@@ -216,6 +215,8 @@ def annotate(image, tracking_frame, matrix, home_team, video_frame, ball_track=N
         px, py = load_homography.project(matrix, position.x, position.y)
         centre = (int(round(float(px))), int(round(float(py))))
         colour = HOME_COLOUR if player.team == home_team else AWAY_COLOUR
+        if player == highlight_player:
+            cv2.circle(image, centre, 15, (0, 255, 255), 3, cv2.LINE_AA)
         cv2.circle(image, centre, 9, colour, 2)
         cv2.putText(image, str(player.jersey_no), (centre[0] - 8, centre[1] - 14),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2, cv2.LINE_AA)
@@ -240,6 +241,56 @@ def annotate(image, tracking_frame, matrix, home_team, video_frame, ball_track=N
     return image
 
 
+def draw_touch_alert(image):
+    text = "Touche probable"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale, thickness, margin = 0.8, 2, 12
+    (text_width, text_height), baseline = cv2.getTextSize(text, font, scale, thickness)
+    x = max(0, image.shape[1] - text_width - 2 * margin)
+    y = image.shape[0]
+    cv2.rectangle(image, (x, y - text_height - baseline - 2 * margin),
+                  (image.shape[1], y), (0, 0, 0), -1)
+    cv2.putText(image, text, (x + margin, y - margin - baseline), font, scale,
+                (0, 255, 255), thickness, cv2.LINE_AA)
+
+
+GT_PATH = os.path.join(os.path.dirname(HERE), "mtah_challenge", "evaluation", "gt",
+                       "BAR-ATH_possession_gt_public.csv")
+# label -> (text, BGR colour)
+GT_LABELS = {"H": ("Barcelone", HOME_COLOUR), "A": ("Athletic", AWAY_COLOUR),
+             "D": ("Dispute", (0, 165, 255)), "X": ("Ballon mort", (128, 128, 128))}
+
+
+def load_gt(path):
+    """Return {video_frame: label} from the possession ground truth CSV."""
+    import csv
+    try:
+        with open(path, newline="") as f:
+            return {int(row["frame"]): row["label"] for row in csv.DictReader(f)}
+
+    except:
+        print('Can not import gt file')
+        return None
+
+
+def draw_possession(image, label, changed, title="GT", y0=10):
+    """Top-right possession box; thick yellow frame and 'CHANGEMENT' while `changed`."""
+    text, colour = GT_LABELS.get(label, (label, (128, 128, 128)))
+    text = "{}: {}".format(title, text)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale, thickness, margin = 0.9, 2, 12
+    (tw, th), baseline = cv2.getTextSize(text, font, scale, thickness)
+    x1 = image.shape[1] - 10
+    x0, y1 = x1 - tw - 2 * margin, y0 + th + baseline + 2 * margin
+    cv2.rectangle(image, (x0, y0), (x1, y1), colour, -1)
+    cv2.putText(image, text, (x0 + margin, y1 - margin - baseline), font, scale,
+                (255, 255, 255), thickness, cv2.LINE_AA)
+    if changed:
+        cv2.rectangle(image, (x0 - 4, y0 - 4), (x1 + 4, y1 + 4), (0, 255, 255), 4)
+        cv2.putText(image, "CHANGEMENT", (x0 - 4, y1 + 28), font, 0.7, (0, 255, 255), 2,
+                    cv2.LINE_AA)
+
+
 def overlay_bottom(image, panel, opacity):
     """Alpha-blend `panel` onto the bottom-centre of `image`, in place."""
     panel_h, panel_w = panel.shape[:2]
@@ -251,7 +302,9 @@ def overlay_bottom(image, panel, opacity):
 
 
 def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, out_path, play,
-                scale, opacity=0.6, panel_fraction=0.4, ball_track=None, ball_in_birdseye=False):
+                scale, opacity=0.6, panel_fraction=0.4, gt=None, ball_track=None, ball_in_birdseye=False):
+
+
     """Annotate video frames start..end (inclusive), write them to an MP4 and optionally play.
 
     The bird's-eye pitch is blended onto the bottom of the video at `opacity` (0-1), at
@@ -268,6 +321,12 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
     writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
     delay = max(1, int(1000 / fps))
     window = "ATD overlay (space: pause, q: quit)"
+    model = PossessionModel(home_team)
+    touch_alert_until = -1
+    highlighted_player = None
+    gt_label = gt.get(start - 1) if gt else None
+    change_until = -1
+    pred_label, pred_change_until = "X", -1
 
     capture.set(cv2.CAP_PROP_POS_FRAMES, start)
     try:
@@ -279,9 +338,21 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
             tracking_frame = by_frame_id.get(video_frame + 1)
             track_point = ball_track.get(video_frame) if ball_track is not None else None
 
+            output = model.update(video_frame, tracking_frame)
+            if output.touch_player is not None:
+                highlighted_player = output.touch_player
+                print("Frame {}: Touche probable".format(video_frame), flush=True)
+                touch_alert_until = video_frame + fps
+            if output.label != pred_label:
+                if pred_label != "X":
+                    pred_change_until = video_frame + fps
+                pred_label = output.label
+
             if tracking_frame is not None and valid[video_frame]:
                 annotate(image, tracking_frame, matrices[video_frame], home_team, video_frame,
-                         ball_track)
+                         ball_track=ball_track,
+                         highlight_player=highlighted_player if video_frame < touch_alert_until
+                         else None)
             elif ball_track is not None:
                 draw_ball_track(image, track_point)
 
@@ -295,6 +366,21 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
             else:
                 panel = birds_eye.render(tracking_frame, home_team)
             overlay_bottom(image, panel, opacity)
+
+            if video_frame < touch_alert_until:
+                draw_touch_alert(image)
+            draw_possession(image, pred_label, video_frame < pred_change_until,
+                            "Prediction", y0=110)
+            if gt:
+                new_label = gt.get(video_frame, gt_label)
+                if new_label != gt_label and gt_label is not None:
+                    change_until = video_frame + fps
+                    print("Frame {}: {} -> {}".format(video_frame, gt_label, new_label),
+                          flush=True)
+                gt_label = new_label
+                if gt_label is not None:
+                    draw_possession(image, gt_label, video_frame < change_until)
+
             writer.write(image)
 
             if play:
@@ -347,6 +433,9 @@ def main():
                              "before dropping it (default 10)")
     parser.add_argument("--video-type", type=str, default="tactical")
 
+    parser.add_argument("--gt", default=GT_PATH,
+                        help="with --clip: possession GT CSV (frame,label); '' to disable")
+
     args = parser.parse_args()
     if not 0.0 <= args.opacity <= 1.0:
         parser.error("--opacity must be between 0 and 1")
@@ -395,9 +484,23 @@ def main():
         start, end = args.clip
         out_path = os.path.join(args.out, "clip_%06d_%06d.mp4" % (start, end))
         try:
-            render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, out_path,
-                        args.play, args.scale, args.opacity, args.panel_width, ball_track,
-                        args.ball_birdseye)
+            render_clip(capture=capture,
+                        start=start,
+                        end=end,
+                        by_frame_id=by_frame_id,
+                        matrices=matrices,
+                        valid=valid,
+                        home_team=home_team,
+                        out_path=out_path,
+                        play=args.play,
+                        scale=args.scale,
+                        opacity=args.opacity,
+                        panel_fraction=args.panel_width,
+                        gt=load_gt(args.gt) if args.gt else None,
+                        ball_track=ball_track,
+                        ball_in_birdseye=args.ball_birdseye)
+
+
         finally:
             capture.release()
             cv2.destroyAllWindows()
