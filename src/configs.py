@@ -1,0 +1,7 @@
+from enum import Enum
+
+
+class BROADCAST_TIMESTAMPS(Enum):
+    START_FRIST_HALF = 7125
+    END_FIRST_HALF = 84725
+    END_SECOND_HALF = 86800
