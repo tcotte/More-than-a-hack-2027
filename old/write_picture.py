@@ -2,7 +2,7 @@ import cv2
 import os
 
 if __name__ == '__main__':
-    video_path = r"/data\broadcast\BAR-ATH_broadcast.mp4"
+    video_path = r"../src/data/broadcast/BAR-ATH_broadcast.mp4"
     output_folder = "pictures"
 
     os.makedirs(output_folder, exist_ok=True)

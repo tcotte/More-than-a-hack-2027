@@ -11,7 +11,7 @@ https://universe.roboflow.com/roboflow-jvuqo/football-players-detection-3zvbc
 https://github.com/JohnComonitski/FootballTrackingDataGeneration?source=post_page-----1b44924968e9-----------------------------------------
 """
 from detections.ball import load_ball_detections
-from detections.tracker import KalmanPointTracker, track_ball
+from detections.tracker import track_ball
 
 """Overlay the ATD tracking (players + ball) on frames of the tactical video.
 
@@ -31,10 +31,8 @@ Images (and clips, as MP4) are written to starter/frames_out/ by default.
 """
 
 import argparse
-import csv
 import os
 import sys
-from collections import defaultdict
 
 import cv2
 import numpy as np
@@ -47,7 +45,7 @@ from kloppy import metrica  # noqa: E402
 
 import games  # noqa: E402
 import load_homography  # noqa: E402
-from possession_model import PITCH_LENGTH, PITCH_WIDTH, PossessionModel, is_valid  # noqa: E402
+from ball_possession.possession_model import PossessionModel, is_valid  # noqa: E402
 
 # BGR
 HOME_COLOUR, AWAY_COLOUR, BALL_COLOUR = (40, 39, 214), (180, 119, 31), (0, 255, 255)
@@ -60,7 +58,7 @@ PITCH_LENGTH, PITCH_WIDTH = 105.0, 68.0
 
 START = 11190
 DEFAULT_FRAMES = [i + START for i in range(100)]
-DEFAULT_DETECTIONS = os.path.join(HERE, "../assets/ball_detection.csv")
+DEFAULT_DETECTIONS = os.path.join(HERE, "../assets/detections/ball_detection.csv")
 
 
 
