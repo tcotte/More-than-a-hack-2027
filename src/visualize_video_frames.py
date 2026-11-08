@@ -18,33 +18,37 @@ from detections.tracker import track_ball
 Tracking positions are normalised pitch coordinates (0-1); the per-frame homography maps them to
 image pixels. Alignment: video_frame = frame_id - 1.
 
-    python starter/visualize_video_frames.py                         # a few frames after kickoff
-    python starter/visualize_video_frames.py --frames 11190 11500    # specific video frames
-    python starter/visualize_video_frames.py --show                  # also open a window per frame
-    python starter/visualize_video_frames.py --clip 11185 11435 --play   # annotated video clip
-    python starter/visualize_video_frames.py --clip 11185 11435 --opacity 0.5 --panel-width 0.35
-    python starter/visualize_video_frames.py --clip 11185 11435 --ball-birdseye   # also plot the
+    python src/visualize_video_frames.py                         # a few frames after kickoff
+    python src/visualize_video_frames.py --frames 11190 11500    # specific video frames
+    python src/visualize_video_frames.py --show                  # also open a window per frame
+    python src/visualize_video_frames.py --clip 11185 11435 --play   # annotated video clip
+    python src/visualize_video_frames.py --clip 11185 11435 --opacity 0.5 --panel-width 0.35
+    python src/visualize_video_frames.py --clip 11185 11435 --ball-birdseye   # also plot the
                                                                           # tracked ball in the
                                                                           # bird's-eye panel
 
-Images (and clips, as MP4) are written to starter/frames_out/ by default.
+Images (and clips, as MP4) are written to frames_out/ by default.
 """
 
 import argparse
 import os
 import sys
+from dataclasses import dataclass
+from typing import Mapping, Optional
 
 import cv2
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(HERE))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(ROOT, "mtah_challenge"))
 sys.path.insert(0, HERE)
 
 from kloppy import metrica  # noqa: E402
+from kloppy.domain import Player, Point  # noqa: E402
 
 import games  # noqa: E402
-import load_homography  # noqa: E402
+from starter import load_homography  # noqa: E402
 from ball_possession.possession_model import PossessionModel, is_valid  # noqa: E402
 
 # BGR
@@ -195,6 +199,24 @@ def build_ball_references(frames, by_frame_id, matrices, valid):
     return references
 
 
+@dataclass
+class PossessionFrame:
+    players_coordinates: Mapping[Player, Point]
+    ball_coordinates: Optional[Point]
+
+
+def frame_with_detected_ball(tracking_frame, track_point, matrix):
+    """Keep ATD players and use the detection track, or a missing ball if unavailable."""
+    if tracking_frame is None:
+        return None
+    ball = None
+    if track_point is not None and matrix is not None:
+        x, y = load_homography.unproject(matrix, *track_point["centre"])
+        if np.isfinite(x) and np.isfinite(y):
+            ball = Point(float(x), float(y))
+    return PossessionFrame(tracking_frame.players_coordinates, ball)
+
+
 def draw_pitch_outline(image, matrix):
     corners = np.array(load_homography.pitch_corners(matrix), dtype=np.int32)
     cv2.polylines(image, [corners], isClosed=True, color=(255, 255, 255), thickness=1)
@@ -300,7 +322,8 @@ def overlay_bottom(image, panel, opacity):
 
 
 def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, out_path, play,
-                scale, opacity=0.6, panel_fraction=0.4, gt=None, ball_track=None, ball_in_birdseye=False):
+                scale, opacity=0.6, panel_fraction=0.4, gt=None, ball_track=None,
+                ball_in_birdseye=False, possession_ball_source="atd"):
 
 
     """Annotate video frames start..end (inclusive), write them to an MP4 and optionally play.
@@ -336,10 +359,14 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
             tracking_frame = by_frame_id.get(video_frame + 1)
             track_point = ball_track.get(video_frame) if ball_track is not None else None
 
-            output = model.update(video_frame, tracking_frame)
+            model_frame = tracking_frame
+            if possession_ball_source == "detections":
+                matrix = matrices[video_frame] if valid[video_frame] else None
+                model_frame = frame_with_detected_ball(tracking_frame, track_point, matrix)
+            output = model.update(video_frame, model_frame)
             if output.touch_player is not None:
-                highlighted_player = output.touch_player
                 print("Frame {}: Touche probable".format(video_frame), flush=True)
+                highlighted_player = output.touch_player
                 touch_alert_until = video_frame + fps
             if output.label != pred_label:
                 if pred_label != "X":
@@ -362,7 +389,9 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
                                          track_point_px=track_point["centre"],
                                          matrix=matrices[video_frame])
             else:
-                panel = birds_eye.render(tracking_frame, home_team)
+                panel = birds_eye.render(
+                    model_frame if ball_in_birdseye and possession_ball_source == "detections"
+                    else tracking_frame, home_team)
             overlay_bottom(image, panel, opacity)
 
             if video_frame < touch_alert_until:
@@ -400,7 +429,7 @@ def main():
                         help="video frames (0-based) to render")
     parser.add_argument("--limit", type=int, default=12000,
                         help="ATD frames to load (raised automatically to cover --frames)")
-    parser.add_argument("--out", default=os.path.join(HERE, "../more-than-a-hack-2027/starter/frames_out"))
+    parser.add_argument("--out", default=os.path.join(ROOT, "frames_out"))
     parser.add_argument("--show", action="store_true", help="display each frame in a window")
     parser.add_argument("--clip", type=int, nargs=2, metavar=("START", "END"),
                         help="render video frames START..END as an annotated MP4 instead")
@@ -418,9 +447,11 @@ def main():
                              "yellow (ATD) and magenta (tracked) points on the raw video frame")
     parser.add_argument("--detections", default=DEFAULT_DETECTIONS,
                         help="CSV of ball detections (frame,x1,y1,x2,y2,score,class_id) used "
-                             "for SORT-style ball tracking, default assets/ball_detection.csv")
+                             "for SORT-style ball tracking, default assets/detections/ball_detection.csv")
     parser.add_argument("--no-detections", action="store_true",
                         help="don't track/overlay the ball from detections")
+    parser.add_argument("--possession-ball-source", choices=("atd", "detections"), default="atd",
+                        help="ball position used for clip possession prediction (default: atd)")
     parser.add_argument("--min-detection-score", type=float, default=0.3,
                         help="ignore detections scoring below this threshold (default 0.3)")
     parser.add_argument("--gating-distance", type=float, default=80.0,
@@ -441,6 +472,15 @@ def main():
         parser.error("--panel-width must be in (0, 1]")
     if args.ball_birdseye and args.no_detections:
         parser.error("--ball-birdseye needs ball detections; drop --no-detections")
+    if args.possession_ball_source == "detections":
+        if not args.clip:
+            parser.error("--possession-ball-source detections requires --clip")
+        if args.no_detections:
+            parser.error("--possession-ball-source detections cannot use --no-detections")
+        if not os.path.isfile(args.detections):
+            parser.error("detections file not found: %s" % args.detections)
+        print("possession uses the detection track and ATD player positions; "
+              "ATD ball positions guide detection association")
 
     paths = games.asset_paths(source=args.video_type)
     games.require(["video", "atd_meta", "atd_raw", "homography"], source=args.video_type)
@@ -463,6 +503,9 @@ def main():
     elif not args.no_detections:
         print("detections file not found, skipping: %s" % args.detections)
 
+    if args.possession_ball_source == "detections" and not detections:
+        parser.error("detections file contains no detections: %s" % args.detections)
+
     ball_track = None
     if detections:
         frame_range = (range(args.clip[0], args.clip[1] + 1) if args.clip
@@ -472,6 +515,9 @@ def main():
               % (len(frame_range), len(references)))
         ball_track = track_ball(detections, frame_range, references, args.min_detection_score,
                                  args.gating_distance, args.max_age)
+        if args.possession_ball_source == "detections" and not ball_track:
+            print("warning: no ball track found for the selected clip; possession will "
+                  "treat the ball as missing")
 
     os.makedirs(args.out, exist_ok=True)
     capture = cv2.VideoCapture(paths["video"])
@@ -496,7 +542,8 @@ def main():
                         panel_fraction=args.panel_width,
                         gt=load_gt(args.gt) if args.gt else None,
                         ball_track=ball_track,
-                        ball_in_birdseye=args.ball_birdseye)
+                        ball_in_birdseye=args.ball_birdseye,
+                        possession_ball_source=args.possession_ball_source)
 
 
         finally:

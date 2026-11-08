@@ -1,6 +1,20 @@
-##Commands
+## Commands
 
-Visualization command (visualize only one video): python.exe visualize_video_frames.py --clip 23000 30000 --play --video-type tactical --detections "assets\ball_detection_first_half_yolo26_sliced.csv" --ball-birdseye
+The visualizer uses `games.py` and the homography utilities from `mtah_challenge`. Match data
+defaults to `mtah_challenge\data`; if your data is in `src\data`, set the following in PowerShell
+from the repository root:
+
+```powershell
+$env:MTAH_DATA_DIR = (Resolve-Path .\src\data).Path
+.\.venv\Scripts\python.exe src\visualize_video_frames.py --clip 23000 30000 --play --video-type tactical --detections "assets\detections\ball_detection_first_half_yolo26_tactical_sliced.csv" --ball-birdseye --possession-ball-source detections
+```
+
+The output is written to `frames_out` by default. `--possession-ball-source detections` uses
+the tracked CSV ball position for possession and touch detection, with ATD player positions.
+The tracker uses the ATD ball to select between candidate detections when available and can
+extrapolate for up to `--max-age` frames. When the track or homography is missing, the model
+treats the ball as missing instead of falling back to ATD. Without this option, possession
+continues to use the ATD ball.
 
 Multi-view command (visualize both videos with ball track and Smart Tagging banners): python.exe multi_view.py --broadcast-video "assets\video\broadcast.mp4" --tactical-video "assets\video\tactical.mp4" --correspondence-csv "assets\frame_correspondence.csv" --detections "assets\ball_detection_first_half_yolo26_sliced.csv" --play --ball-birdseye
 
