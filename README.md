@@ -16,6 +16,22 @@ extrapolate for up to `--max-age` frames. When the track or homography is missin
 treats the ball as missing instead of falling back to ATD. Without this option, possession
 continues to use the ATD ball.
 
+### Evaluate possession with tactical detections
+
+From Git Bash at the repository root, with the match data in `src/data`:
+
+```bash
+export MTAH_DATA_DIR="$(pwd -W)/src/data"
+./.venv/Scripts/python.exe src/ball_possession/predict_possession.py --start 11185 --end 18684 --detections "assets/detections/ball_detection_first_half_yolo26_tactical_sliced.csv" --name possession_yolo_tactical_public
+./.venv/Scripts/python.exe mtah_challenge/evaluation/run_evaluation.py --results evaluation/results --out evaluation
+```
+
+The public ground truth covers frames 11185–18684; the detections begin at 11190.
+The submission has 199319 rows, with `X` outside the selected interval, and is suitable only
+for this public-window test, not a full-match submission. The ball track uses the same ATD-guided
+association and default tracker parameters as the visualizer. The score is a pipeline check, not
+a reliable full-match ranking; see `mtah_challenge/EVALUATION.md`.
+
 Multi-view command (visualize both videos with ball track and Smart Tagging banners): python.exe multi_view.py --broadcast-video "assets\video\broadcast.mp4" --tactical-video "assets\video\tactical.mp4" --correspondence-csv "assets\frame_correspondence.csv" --detections "assets\ball_detection_first_half_yolo26_sliced.csv" --play --ball-birdseye
 
 

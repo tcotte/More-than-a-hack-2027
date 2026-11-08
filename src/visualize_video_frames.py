@@ -33,8 +33,6 @@ Images (and clips, as MP4) are written to frames_out/ by default.
 import argparse
 import os
 import sys
-from dataclasses import dataclass
-from typing import Mapping, Optional
 
 import cv2
 import numpy as np
@@ -45,11 +43,11 @@ sys.path.insert(0, os.path.join(ROOT, "mtah_challenge"))
 sys.path.insert(0, HERE)
 
 from kloppy import metrica  # noqa: E402
-from kloppy.domain import Player, Point  # noqa: E402
 
 import games  # noqa: E402
 from starter import load_homography  # noqa: E402
 from ball_possession.possession_model import PossessionModel, is_valid  # noqa: E402
+from ball_possession.detection_input import build_ball_references, frame_with_detected_ball  # noqa: E402
 
 # BGR
 HOME_COLOUR, AWAY_COLOUR, BALL_COLOUR = (40, 39, 214), (180, 119, 31), (0, 255, 255)
@@ -179,44 +177,6 @@ def read_video_frame(capture, video_frame):
     return image
 
 
-def build_ball_references(frames, by_frame_id, matrices, valid):
-    """Project the ATD ground-truth (yellow) ball position into pixels for each video frame.
-
-    Returns {video_frame: (px, py)}, only for frames with a valid homography and a tracked ball.
-    """
-    references = {}
-    for video_frame in frames:
-        if not valid[video_frame]:
-            continue
-        tracking_frame = by_frame_id.get(video_frame + 1)
-        if tracking_frame is None:
-            continue
-        ball = tracking_frame.ball_coordinates
-        if not is_valid(ball):
-            continue
-        px, py = load_homography.project(matrices[video_frame], ball.x, ball.y)
-        references[video_frame] = (float(px), float(py))
-    return references
-
-
-@dataclass
-class PossessionFrame:
-    players_coordinates: Mapping[Player, Point]
-    ball_coordinates: Optional[Point]
-
-
-def frame_with_detected_ball(tracking_frame, track_point, matrix):
-    """Keep ATD players and use the detection track, or a missing ball if unavailable."""
-    if tracking_frame is None:
-        return None
-    ball = None
-    if track_point is not None and matrix is not None:
-        x, y = load_homography.unproject(matrix, *track_point["centre"])
-        if np.isfinite(x) and np.isfinite(y):
-            ball = Point(float(x), float(y))
-    return PossessionFrame(tracking_frame.players_coordinates, ball)
-
-
 def draw_pitch_outline(image, matrix):
     corners = np.array(load_homography.pitch_corners(matrix), dtype=np.int32)
     cv2.polylines(image, [corners], isClosed=True, color=(255, 255, 255), thickness=1)
@@ -278,7 +238,7 @@ GT_PATH = os.path.join(os.path.dirname(HERE), "mtah_challenge", "evaluation", "g
                        "BAR-ATH_possession_gt_public.csv")
 # label -> (text, BGR colour)
 GT_LABELS = {"H": ("Barcelone", HOME_COLOUR), "A": ("Athletic", AWAY_COLOUR),
-             "D": ("Dispute", (0, 165, 255)), "X": ("Ballon mort", (128, 128, 128))}
+             "D": ("Ballon mort", (0, 165, 255)), "X": ("Inconnu", (128, 128, 128))}
 
 
 def load_gt(path):

@@ -11,15 +11,22 @@ The model has two deliberately separate signals:
   ``CONFIRM_FRAMES`` consecutive frames. The output dates a confirmed change back to the first
   frame of that run, allowing callers to backfill labels while preserving the existing API.
 
-If the ball is missing for ``DEAD_BALL_FRAMES`` consecutive frames, the model emits ``D`` and
-dates that transition to the start of the missing run. A single missing frame does not mean a
-dead ball: tracking can lose the ball during live play. Sustained absence is still only a proxy
-for a stoppage, not a referee/game-state signal, and can mislabel long occlusions.
+If the ball is missing for ``DEAD_BALL_FRAMES`` consecutive frames, the model emits ``D`` by
+default and dates that transition to the start of the missing run. Optionally it emits ``X``
+instead. A missing ball is not a referee/game-state signal, even over long occlusions.
 
 The coordinates are normalized to the pitch dimensions below. This is a lightweight heuristic,
 not a trained model: it does not distinguish controlled possession from a nearby loose ball, and
 its distance, persistence, and missing-ball thresholds should be evaluated on labeled data before
 being treated as calibrated.
+
+Frame indices must increase. When frames are skipped, touch and persistence histories are reset:
+unobserved frames cannot establish a consecutive missing-ball or possession-change run.
+
+The optional set-piece heuristic combines a Smart Tagging interval with a ball that remains
+within one metre for two seconds at 25 fps. It is an uncalibrated proxy: tags include both dead
+and live play, and a stationary ball does not prove a stoppage. It requires the caller to supply
+the set-piece signal for each frame and is disabled by default.
 """
 
 from dataclasses import dataclass
@@ -37,6 +44,8 @@ DIRECTION_CHANGE_DEGREES = 20.0
 MAX_TOUCH_DISTANCE = 3.0
 CONFIRM_FRAMES = 50
 DEAD_BALL_FRAMES = 25
+SET_PIECE_STILL_FRAMES = 50
+SET_PIECE_STILL_RADIUS = 1.0
 
 
 def is_valid(point):
@@ -126,7 +135,10 @@ class ModelOutput:
 
 class PossessionModel:
     def __init__(self, home_team, confirm_frames=CONFIRM_FRAMES,
-                 dead_ball_frames=DEAD_BALL_FRAMES):
+                 dead_ball_frames=DEAD_BALL_FRAMES, use_set_piece_heuristic=False,
+                 missing_ball_label="D"):
+        if missing_ball_label not in ("D", "X"):
+            raise ValueError("missing_ball_label must be D or X")
         self.home_team = home_team
         self.confirm_frames = confirm_frames
         self.dead_ball_frames = dead_ball_frames
@@ -134,11 +146,26 @@ class PossessionModel:
         self.label = "X"
         self.pending = None          # (candidate label, start frame, last frame, count)
         self.missing_ball_frames = 0
+        self.last_frame = None
+        self.use_set_piece_heuristic = use_set_piece_heuristic
+        self.missing_ball_label = missing_ball_label
+        self.still_ball_anchor = None
+        self.still_ball_start = None
 
     def _team_label(self, player):
         return "H" if player.team == self.home_team else "A"
 
-    def update(self, frame_index, tracking_frame):
+    def update(self, frame_index, tracking_frame, set_piece=False):
+        if self.last_frame is not None:
+            if frame_index <= self.last_frame:
+                raise ValueError("frame indices must be strictly increasing")
+            if frame_index != self.last_frame + 1:
+                self.detector.reset()
+                self.pending = None
+                self.missing_ball_frames = 0
+                self.still_ball_anchor = None
+                self.still_ball_start = None
+        self.last_frame = frame_index
         touch_player, change_frame = None, None
         if tracking_frame is None:
             self.detector.reset()
@@ -150,15 +177,32 @@ class PossessionModel:
 
         if tracking_frame is None or not is_valid(ball):
             self.pending = None
+            self.still_ball_anchor = None
+            self.still_ball_start = None
             self.missing_ball_frames += 1
             if (self.missing_ball_frames >= self.dead_ball_frames
-                    and self.label != "D"):
-                self.label = "D"
+                    and self.label != self.missing_ball_label):
+                self.label = self.missing_ball_label
                 change_frame = frame_index - self.dead_ball_frames + 1
             return ModelOutput(self.label, touch_player, change_frame)
 
         self.missing_ball_frames = 0
         ball_position = np.array([ball.x * PITCH_LENGTH, ball.y * PITCH_WIDTH])
+        if self.use_set_piece_heuristic and set_piece:
+            if (self.still_ball_anchor is None
+                    or np.linalg.norm(ball_position - self.still_ball_anchor)
+                    > SET_PIECE_STILL_RADIUS):
+                self.still_ball_anchor = ball_position
+                self.still_ball_start = frame_index
+            elif frame_index - self.still_ball_start + 1 >= SET_PIECE_STILL_FRAMES:
+                self.pending = None
+                if self.label != "D":
+                    self.label = "D"
+                    change_frame = self.still_ball_start
+                return ModelOutput(self.label, touch_player, change_frame)
+        else:
+            self.still_ball_anchor = None
+            self.still_ball_start = None
         nearest_player, _ = closest_player_to_ball(
             tracking_frame, ball_position, MAX_TOUCH_DISTANCE)
 
