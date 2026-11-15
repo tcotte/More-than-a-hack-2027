@@ -39,10 +39,9 @@ Images (and clips, as MP4) are written to frames_out/ by default.
 import argparse
 import os
 import sys
-<<<<<<< HEAD
+
 from collections import Counter, defaultdict
-=======
->>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
+
 
 import cv2
 import numpy as np
@@ -56,15 +55,13 @@ sys.path.insert(0, HERE)
 from kloppy import metrica  # noqa: E402
 
 import games  # noqa: E402
-<<<<<<< HEAD
+
 import load_homography  # noqa: E402
 import pitch_zones  # noqa: E402
-from ball_possession.possession_model import PossessionModel, is_valid  # noqa: E402
-=======
-from starter import load_homography  # noqa: E402
+
 from ball_possession.possession_model import PossessionModel, is_valid  # noqa: E402
 from ball_possession.detection_input import build_ball_references, frame_with_detected_ball  # noqa: E402
->>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
+
 
 # BGR
 HOME_COLOUR, AWAY_COLOUR, BALL_COLOUR = (40, 39, 214), (180, 119, 31), (0, 255, 255)
@@ -80,12 +77,12 @@ PITCH_LENGTH, PITCH_WIDTH = 105.0, 68.0
 
 START = 11190
 DEFAULT_FRAMES = [i + START for i in range(100)]
-<<<<<<< HEAD
+
 DEFAULT_DETECTIONS = os.path.join(HERE, "../assets/detections/ball_detection_first_half_yolo26_tactical_sliced.csv")
 DEFAULT_TRACKED_BALL_CSV = os.path.join(HERE, "../assets/trackings/ball/tracked_ball.csv")
-=======
-DEFAULT_DETECTIONS = os.path.join(HERE, "../assets/detections/ball_detection.csv")
->>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
+
+
+
 
 
 
@@ -600,12 +597,9 @@ def overlay_bottom(image, panel, opacity):
 
 def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, out_path, play,
                 scale, opacity=0.6, panel_fraction=0.4, gt=None, ball_track=None,
-<<<<<<< HEAD
                 ball_in_birdseye=False, tracked_ball_points=None, player_boxes=None,
                 player_match_threshold=25.0, away_team=None, pitch_dimensions=None,possession_ball_source="atd"):
-=======
-                ball_in_birdseye=False, possession_ball_source="atd"):
->>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
+
 
 
     """Annotate video frames start..end (inclusive), write them to an MP4 and optionally play.
@@ -682,11 +676,7 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
                                          matrix=matrices[video_frame],
                                          atd_matches=atd_matches, team_override=team_override)
             else:
-<<<<<<< HEAD
-                panel = birds_eye.render(tracking_frame, home_team,
-                                         atd_matches=atd_matches, team_override=team_override)
-=======
->>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
+
                 panel = birds_eye.render(
                     model_frame if ball_in_birdseye and possession_ball_source == "detections"
                     else tracking_frame, home_team)
@@ -915,16 +905,13 @@ def main():
                         gt=load_gt(args.gt) if args.gt else None,
                         ball_track=ball_track,
                         ball_in_birdseye=args.ball_birdseye,
-<<<<<<< HEAD
                         possession_ball_source=args.possession_ball_source,
                         tracked_ball_points=tracked_ball_points,
                         player_boxes=player_boxes,
                         player_match_threshold=args.player_match_threshold,
                         away_team=away_team,
                         pitch_dimensions=pitch_dimensions)
-=======
-                        possession_ball_source=args.possession_ball_source)
->>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
+
 
 
         finally:
