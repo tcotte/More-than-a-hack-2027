@@ -12,3 +12,5 @@ src/data/
 assets/detections/ball_detection_first_half_yolo26.csv
 assets/detections/ball_detection.csv
 frames_out/
+assets/detections/players/players_tactical_first_half.csv
+assets/detections/players/players_tracked_bytetrack.csv

@@ -50,7 +50,11 @@ import load_smart_tagging  # noqa: E402
 from ball_possession.possession_model import is_valid  # noqa: E402
 from visualize_video_frames import BirdsEye, build_ball_references, draw_ball_track  # noqa: E402
 from detections.ball import load_ball_detections  # noqa: E402
+<<<<<<< HEAD
 from detections.tracker import track_ball, track_ball_native_bytetrack  # noqa: E402
+=======
+from detections.tracker import track_ball  # noqa: E402
+>>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
 
 DEFAULT_CORRESPONDENCE_CSV = os.path.join(os.path.dirname(SRC_DIR),
 "assets", "frame_timestamps", "frame_correspondence.csv")
@@ -286,9 +290,12 @@ def main():
     parser.add_argument("--max-age", type=int, default=10,
                         help="frames to coast the ball track without a matching detection "
                              "before dropping it (default 10)")
+<<<<<<< HEAD
     parser.add_argument("--tracker", choices=("sort", "bytetrack"), default="sort",
                         help="ball-tracking algorithm: SORT-style (default) or BYTE-style "
                              "(also tries low-score detections to recover an existing track)")
+=======
+>>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
     parser.add_argument("--no-smart-tagging", action="store_true",
                         help="skip the Smart Tagging banners on the tactical panel")
     args = parser.parse_args()
@@ -330,6 +337,7 @@ def main():
                                                tracking_source.matrices, tracking_source.valid)
             print("tracking ball over %d %s frames (%d with an ATD reference)..."
                   % (len(frame_range), source, len(references)))
+<<<<<<< HEAD
             if args.tracker == "bytetrack":
                 video_path = games.asset_paths(source=source)["video"]
                 probe = cv2.VideoCapture(video_path)
@@ -344,6 +352,11 @@ def main():
                 ball_tracks[source] = track_ball(detections, frame_range, references,
                                                  args.min_detection_score, args.gating_distance,
                                                  args.max_age)
+=======
+            ball_tracks[source] = track_ball(detections, frame_range, references,
+                                             args.min_detection_score, args.gating_distance,
+                                             args.max_age)
+>>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
 
     smart_tagging_events = None
     if not args.no_smart_tagging:

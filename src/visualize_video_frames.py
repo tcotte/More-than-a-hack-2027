@@ -13,45 +13,58 @@ https://github.com/JohnComonitski/FootballTrackingDataGeneration?source=post_pag
 from ball_possession.detection_input import frame_with_detected_ball
 from ball_possession.predict_possession import ROOT
 from detections.ball import load_ball_detections
+<<<<<<< HEAD
 from detections.tracker import track_ball, track_ball_native_bytetrack
+=======
+from detections.tracker import track_ball
+>>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
 
 """Overlay the ATD tracking (players + ball) on frames of the tactical video.
 
 Tracking positions are normalised pitch coordinates (0-1); the per-frame homography maps them to
 image pixels. Alignment: video_frame = frame_id - 1.
 
-    python starter/visualize_video_frames.py                         # a few frames after kickoff
-    python starter/visualize_video_frames.py --frames 11190 11500    # specific video frames
-    python starter/visualize_video_frames.py --show                  # also open a window per frame
-    python starter/visualize_video_frames.py --clip 11185 11435 --play   # annotated video clip
-    python starter/visualize_video_frames.py --clip 11185 11435 --opacity 0.5 --panel-width 0.35
-    python starter/visualize_video_frames.py --clip 11185 11435 --ball-birdseye   # also plot the
+    python src/visualize_video_frames.py                         # a few frames after kickoff
+    python src/visualize_video_frames.py --frames 11190 11500    # specific video frames
+    python src/visualize_video_frames.py --show                  # also open a window per frame
+    python src/visualize_video_frames.py --clip 11185 11435 --play   # annotated video clip
+    python src/visualize_video_frames.py --clip 11185 11435 --opacity 0.5 --panel-width 0.35
+    python src/visualize_video_frames.py --clip 11185 11435 --ball-birdseye   # also plot the
                                                                           # tracked ball in the
                                                                           # bird's-eye panel
 
-Images (and clips, as MP4) are written to starter/frames_out/ by default.
+Images (and clips, as MP4) are written to frames_out/ by default.
 """
 
 import argparse
-import csv
 import os
 import sys
+<<<<<<< HEAD
 from collections import Counter, defaultdict
+=======
+>>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
 
 import cv2
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(HERE))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(ROOT, "mtah_challenge"))
 sys.path.insert(0, HERE)
 
 from kloppy import metrica  # noqa: E402
 
 import games  # noqa: E402
+<<<<<<< HEAD
 import load_homography  # noqa: E402
 import pitch_zones  # noqa: E402
 from ball_possession.possession_model import PossessionModel, is_valid  # noqa: E402
+=======
+from starter import load_homography  # noqa: E402
+from ball_possession.possession_model import PossessionModel, is_valid  # noqa: E402
+from ball_possession.detection_input import build_ball_references, frame_with_detected_ball  # noqa: E402
+>>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
 
 # BGR
 HOME_COLOUR, AWAY_COLOUR, BALL_COLOUR = (40, 39, 214), (180, 119, 31), (0, 255, 255)
@@ -67,8 +80,12 @@ PITCH_LENGTH, PITCH_WIDTH = 105.0, 68.0
 
 START = 11190
 DEFAULT_FRAMES = [i + START for i in range(100)]
+<<<<<<< HEAD
 DEFAULT_DETECTIONS = os.path.join(HERE, "../assets/detections/ball_detection_first_half_yolo26_tactical_sliced.csv")
 DEFAULT_TRACKED_BALL_CSV = os.path.join(HERE, "../assets/trackings/ball/tracked_ball.csv")
+=======
+DEFAULT_DETECTIONS = os.path.join(HERE, "../assets/detections/ball_detection.csv")
+>>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
 
 
 
@@ -438,26 +455,6 @@ def read_video_frame(capture, video_frame):
     return image
 
 
-def build_ball_references(frames, by_frame_id, matrices, valid):
-    """Project the ATD ground-truth (yellow) ball position into pixels for each video frame.
-
-    Returns {video_frame: (px, py)}, only for frames with a valid homography and a tracked ball.
-    """
-    references = {}
-    for video_frame in frames:
-        if not valid[video_frame]:
-            continue
-        tracking_frame = by_frame_id.get(video_frame + 1)
-        if tracking_frame is None:
-            continue
-        ball = tracking_frame.ball_coordinates
-        if not is_valid(ball):
-            continue
-        px, py = load_homography.project(matrices[video_frame], ball.x, ball.y)
-        references[video_frame] = (float(px), float(py))
-    return references
-
-
 def draw_pitch_outline(image, matrix):
     corners = np.array(load_homography.pitch_corners(matrix), dtype=np.int32)
     cv2.polylines(image, [corners], isClosed=True, color=(255, 255, 255), thickness=1)
@@ -558,7 +555,7 @@ GT_PATH = os.path.join(os.path.dirname(HERE), "mtah_challenge", "evaluation", "g
                        "BAR-ATH_possession_gt_public.csv")
 # label -> (text, BGR colour)
 GT_LABELS = {"H": ("Barcelone", HOME_COLOUR), "A": ("Athletic", AWAY_COLOUR),
-             "D": ("Dispute", (0, 165, 255)), "X": ("Ballon mort", (128, 128, 128))}
+             "D": ("Ballon mort", (0, 165, 255)), "X": ("Inconnu", (128, 128, 128))}
 
 
 def load_gt(path):
@@ -603,8 +600,12 @@ def overlay_bottom(image, panel, opacity):
 
 def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, out_path, play,
                 scale, opacity=0.6, panel_fraction=0.4, gt=None, ball_track=None,
+<<<<<<< HEAD
                 ball_in_birdseye=False, tracked_ball_points=None, player_boxes=None,
                 player_match_threshold=25.0, away_team=None, pitch_dimensions=None,possession_ball_source="atd"):
+=======
+                ball_in_birdseye=False, possession_ball_source="atd"):
+>>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
 
 
     """Annotate video frames start..end (inclusive), write them to an MP4 and optionally play.
@@ -681,8 +682,11 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
                                          matrix=matrices[video_frame],
                                          atd_matches=atd_matches, team_override=team_override)
             else:
+<<<<<<< HEAD
                 panel = birds_eye.render(tracking_frame, home_team,
                                          atd_matches=atd_matches, team_override=team_override)
+=======
+>>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
                 panel = birds_eye.render(
                     model_frame if ball_in_birdseye and possession_ball_source == "detections"
                     else tracking_frame, home_team)
@@ -911,12 +915,16 @@ def main():
                         gt=load_gt(args.gt) if args.gt else None,
                         ball_track=ball_track,
                         ball_in_birdseye=args.ball_birdseye,
+<<<<<<< HEAD
                         possession_ball_source=args.possession_ball_source,
                         tracked_ball_points=tracked_ball_points,
                         player_boxes=player_boxes,
                         player_match_threshold=args.player_match_threshold,
                         away_team=away_team,
                         pitch_dimensions=pitch_dimensions)
+=======
+                        possession_ball_source=args.possession_ball_source)
+>>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
 
 
         finally:
