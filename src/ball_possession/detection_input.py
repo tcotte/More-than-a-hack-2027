@@ -5,7 +5,7 @@ from typing import Mapping, Optional
 
 import numpy as np
 from kloppy.domain import Player, Point
-from starter import load_homography
+
 
 from ball_possession.possession_model import is_valid
 

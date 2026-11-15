@@ -1,3 +1,9 @@
+# More Than a Hack 2027
+
+This repository contains the code and data for the More Than a Hack 2027 evaluation. The evaluation is based on a single 
+match between Barcelona and Athletic Bilbao, and the goal is to track the ball and players in both tactical and broadcast 
+videos.
+
 ## Commands
 
 The visualizer uses `games.py` and the homography utilities from `mtah_challenge`. Match data
@@ -34,13 +40,6 @@ a reliable full-match ranking; see `mtah_challenge/EVALUATION.md`.
 
 Multi-view command (visualize both videos with ball track and Smart Tagging banners): python.exe multi_view.py --broadcast-video "assets\video\broadcast.mp4" --tactical-video "assets\video\tactical.mp4" --correspondence-csv "assets\frame_correspondence.csv" --detections "assets\ball_detection_first_half_yolo26_sliced.csv" --play --ball-birdseye
 
-
-<<<<<<< HEAD
-# More Than a Hack 2027
-
-This repository contains the code and data for the More Than a Hack 2027 evaluation. The evaluation is based on a single 
-match between Barcelona and Athletic Bilbao, and the goal is to track the ball and players in both tactical and broadcast 
-videos.
 
 ## Execution before submission
 
@@ -88,9 +87,8 @@ the correct team for each goalkeeper:
 (pitch_zones.penalty_box_bounds), picking the one closest to the goal line if multiple; overrides that player's team 
 accordingly (ATD team labels aren't always reliable for keepers).
 
-# TODO define script for that 
-→ `scripts/players_detection/export_player_matches_csv.py`
-and verification `scripts/players_detection/visualize_player_matches_csv.py`
+5. Use `scripts/players_detection/export_player_matches_csv.py` script to store data in csv file.
+And verify with `scripts/players_detection/visualize_player_matches_csv.py`
 
 ### Frames recognition
 1. Define rectangles where the countdown is located in both videos (broadcast and tactical).
@@ -110,38 +108,3 @@ file *assets/frame_timestamps/frame_correspondence.csv*)
 - Player detection: YOLOv26s
 - Ball detection: YOLOv26s + SAHI
 - Frame OCR: Tesseract OCR
-=======
-## Ideas 
-
-- Try to use the ball detection on the broadcast video to see if it adds accuracy.
-- Try to exploit the smart tagging provided in *data* folder.
-- Try to exploit at the maximum the multi-view visualization to get more precise information about the ball position and 
-players positions.
-- Use LLMs to analyze the multi-view visualization and extract information about the ball position and players positions.
-- Use VLM (maybe Soccer CLIP) to get more information about some events in the multi-view visualization 
-(e.g. offside, fouls, etc...).
-- Try BoT SORT tracking algorithm.
-
-
-## SoccerNet
-
-It seems that the SoccerNet dataset is a good source of data to train a model to detect the ball and players in soccer 
-videos:
-```
-!git clone {SoccerNet repository url}
-from SoccerNet.Downloader import SoccerNetDownloader
-mySoccerNetDownloader = SoccerNetDownloader(LocalDirectory="./SoccerNet")
-mySoccerNetDownloader.downloadDataTask(task="tracking", split=["training", "test"])
-```
-[source] https://github.com/francescopiocirillo/soccer-players-tracking/blob/main/scripts/0%20-%20dataset_download.py
-
-
-## SOTA
-
-[1] Graph CNNs https://arxiv.org/pdf/2211.02125
-[2] Soccer CLIP https://ieeexplore.ieee.org/document/10916659
-[3] Football possession estimation https://www.mdpi.com/1424-8220/26/4/1252
-[4] Agentic Multi-View Reasoning in Sports Video Understanding https://arxiv.org/html/2607.11844
-[5] Research on Multi-player Tracking in Soccer Videos by Combining Tracking-Prediction-Detection 
-https://www.researchgate.net/publication/394906183_Research_on_Multi-player_Tracking_in_Soccer_Videos_by_Combining_Tracking-Prediction-Detection
->>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb

@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from kloppy import metrica  # noqa: E402
 
 import games  # noqa: E402
-import load_homography  # noqa: E402
+from starter import load_homography  # noqa: E402
 from ball_possession.possession_model import is_valid  # noqa: E402
 from visualize_video_frames import (  # noqa: E402
     load_player_tracks_csv,

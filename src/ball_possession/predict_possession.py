@@ -22,7 +22,7 @@ sys.path.insert(0, SRC)
 from kloppy import metrica  # noqa: E402
 
 import games  # noqa: E402
-from starter import load_homography, load_smart_tagging  # noqa: E402
+# import load_homography, load_smart_tagging  # noqa: E402
 from ball_possession.detection_input import build_ball_references, frame_with_detected_ball  # noqa: E402
 from ball_possession.possession_model import PossessionModel  # noqa: E402
 from detections.ball import load_ball_detections  # noqa: E402

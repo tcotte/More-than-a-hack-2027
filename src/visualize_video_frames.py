@@ -10,14 +10,15 @@ https://universe.roboflow.com/roboflow-jvuqo/football-players-detection-3zvbc
 
 https://github.com/JohnComonitski/FootballTrackingDataGeneration?source=post_page-----1b44924968e9-----------------------------------------
 """
+import csv
+
 from ball_possession.detection_input import frame_with_detected_ball
 from ball_possession.predict_possession import ROOT
 from detections.ball import load_ball_detections
-<<<<<<< HEAD
+
 from detections.tracker import track_ball, track_ball_native_bytetrack
-=======
-from detections.tracker import track_ball
->>>>>>> 55a2d07b3e99dc81d4cfb0a62217838cbd2252cb
+
+
 
 """Overlay the ATD tracking (players + ball) on frames of the tactical video.
 
@@ -56,12 +57,12 @@ from kloppy import metrica  # noqa: E402
 
 import games  # noqa: E402
 
-import load_homography  # noqa: E402
 import pitch_zones  # noqa: E402
 
 from ball_possession.possession_model import PossessionModel, is_valid  # noqa: E402
 from ball_possession.detection_input import build_ball_references, frame_with_detected_ball  # noqa: E402
-
+from starter import load_homography
+from starter.load_homography import load, project # noqa: E402
 
 # BGR
 HOME_COLOUR, AWAY_COLOUR, BALL_COLOUR = (40, 39, 214), (180, 119, 31), (0, 255, 255)

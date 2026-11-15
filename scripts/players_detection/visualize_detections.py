@@ -16,8 +16,8 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from games import require  # noqa: E402
-from load_atd import video_frame_of  # noqa: E402
-from load_homography import load as load_homography, project, unproject  # noqa: E402
+from starter.load_atd import video_frame_of  # noqa: E402
+from starter.load_homography import load as load_homography, project, unproject  # noqa: E402
 import pitch_zones  # noqa: E402
 from utils import GAME_PERIODS  # noqa: E402
 
