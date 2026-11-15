@@ -11,7 +11,7 @@ https://universe.roboflow.com/roboflow-jvuqo/football-players-detection-3zvbc
 https://github.com/JohnComonitski/FootballTrackingDataGeneration?source=post_page-----1b44924968e9-----------------------------------------
 """
 from detections.ball import load_ball_detections
-from detections.tracker import track_ball
+from detections.tracker import track_ball, track_ball_native_bytetrack
 
 """Overlay the ATD tracking (players + ball) on frames of the tactical video.
 
@@ -31,11 +31,14 @@ Images (and clips, as MP4) are written to starter/frames_out/ by default.
 """
 
 import argparse
+import csv
 import os
 import sys
+from collections import Counter, defaultdict
 
 import cv2
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -45,6 +48,7 @@ from kloppy import metrica  # noqa: E402
 
 import games  # noqa: E402
 import load_homography  # noqa: E402
+import pitch_zones  # noqa: E402
 from ball_possession.possession_model import PossessionModel, is_valid  # noqa: E402
 
 # BGR
@@ -52,13 +56,17 @@ HOME_COLOUR, AWAY_COLOUR, BALL_COLOUR = (40, 39, 214), (180, 119, 31), (0, 255, 
 
 # The SORT-style ball track (from detections alone, no ATD ground truth) is drawn in magenta.
 TRACK_COLOUR = (255, 0, 255)
+# A merged ball-tracking CSV's (x, y) point (see load_tracked_ball_points()) is drawn in green,
+# to stay visually distinct from both the ATD yellow point and the live-tracked magenta one.
+TRACKED_POINT_COLOUR = (0, 255, 0)
 # Metres, same as utils.plot_frame.
 PITCH_LENGTH, PITCH_WIDTH = 105.0, 68.0
 # START = 11190
 
 START = 11190
 DEFAULT_FRAMES = [i + START for i in range(100)]
-DEFAULT_DETECTIONS = os.path.join(HERE, "../assets/detections/ball_detection.csv")
+DEFAULT_DETECTIONS = os.path.join(HERE, "../assets/detections/ball_detection_first_half_yolo26_tactical_sliced.csv")
+DEFAULT_TRACKED_BALL_CSV = os.path.join(HERE, "../assets/trackings/ball/tracked_ball.csv")
 
 
 
@@ -77,6 +85,245 @@ def draw_ball_track(image, point):
     cv2.circle(image, centre, 4, TRACK_COLOUR, -1, cv2.LINE_AA)
     cv2.putText(image, label, (centre[0] + 6, centre[1] - 6),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, TRACK_COLOUR, 1, cv2.LINE_AA)
+
+
+def load_tracked_ball_points(path):
+    """{video_frame: {"point": (x, y), "source": str or None}} from a merged ball-tracking CSV.
+
+    Built for the output of scripts/ball_tracking/merge_sort_atd_ball.py (frame,x,y,source,...),
+    but only frame/x/y are required -- any CSV with those three columns works. Frames whose x or
+    y is blank (nothing was tracked for them and the CSV was not forward-filled) are skipped.
+    """
+    points = {}
+    with open(path, newline="") as handle:
+        reader = csv.DictReader(handle)
+        missing = [name for name in ("frame", "x", "y") if name not in (reader.fieldnames or [])]
+        if missing:
+            raise ValueError("{}: missing columns {}".format(path, missing))
+        for row in reader:
+            if row["x"] in (None, "") or row["y"] in (None, ""):
+                continue
+            points[int(float(row["frame"]))] = {
+                "point": (float(row["x"]), float(row["y"])),
+                "source": row.get("source") or None,
+            }
+    return points
+
+
+def draw_tracked_ball_point(image, info):
+    """Draw a merged ball-tracking CSV's (x, y) point -- see load_tracked_ball_points().
+
+    Deliberately plain (a dot plus its source label): the point already is the tracker's final
+    answer for this frame (SORT, ATD or forward-filled), not a detection to second-guess, so
+    there is no bbox/score to draw alongside it the way draw_ball_track() does.
+    """
+    if info is None:
+        return
+    centre = (int(round(info["point"][0])), int(round(info["point"][1])))
+    cv2.circle(image, centre, 5, TRACKED_POINT_COLOUR, -1, cv2.LINE_AA)
+    cv2.circle(image, centre, 6, (0, 0, 0), 1, cv2.LINE_AA)
+    if info["source"]:
+        cv2.putText(image, info["source"], (centre[0] + 8, centre[1] + 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, TRACKED_POINT_COLOUR, 1, cv2.LINE_AA)
+
+
+def load_player_tracks_csv(path):
+    """{video_frame: (n, 3) array of (bottom_mid_x, bottom_mid_y, track_id)} from a tracked-players CSV.
+
+    Built for the output of scripts/players_detection/track_with_bytetrack.py
+    (frame,track_id,x1,y1,x2,y2,score), but any CSV with those frame/track_id/box columns works.
+
+    The point used is each box's bottom-middle ((x1+x2)/2, y2), i.e. the player's feet, not the
+    box centre -- this is where an ATD player's projected pitch position actually sits (same
+    convention as scripts/players_detection/visualize_detections.py's
+    assign_team_ids_from_atd()), so matching against it (see match_atd_players_one_to_one()) is
+    not thrown off by a vertical offset the way matching against the box centre would be.
+    """
+    import pandas as pd
+    df = pd.read_csv(path)
+    required = ["frame", "track_id", "x1", "y1", "x2", "y2"]
+    missing = [name for name in required if name not in df.columns]
+    if missing:
+        raise ValueError("{}: missing columns {}".format(path, missing))
+
+    cx = (df["x1"].values + df["x2"].values) / 2.0
+    cy = df["y2"].values
+    track_id = df["track_id"].values
+
+    boxes = {}
+    for video_frame, group in df.groupby("frame"):
+        idx = group.index.values
+        boxes[int(video_frame)] = np.stack([cx[idx], cy[idx], track_id[idx]], axis=1)
+
+    # print(boxes)
+    return boxes
+
+
+def match_atd_players_to_boxes(tracking_frame, matrix, boxes, threshold):
+    """{player: track_id} for ATD players close enough (<= threshold px) to a tracked box's feet.
+
+    `boxes` is this video frame's (n, 3) array of (bottom_mid_x, bottom_mid_y, track_id), see
+    load_player_tracks_csv(). Players with no valid ATD position, or with no box within
+    `threshold` px of their projected position, are simply left out of the returned mapping.
+    """
+    matches = {}
+    if boxes is None or len(boxes) == 0:
+        return matches
+    for player, position in tracking_frame.players_coordinates.items():
+        if not is_valid(position):
+            continue
+        px, py = load_homography.project(matrix, position.x, position.y)
+        dist = np.sqrt((boxes[:, 0] - float(px)) ** 2 + (boxes[:, 1] - float(py)) ** 2)
+        nearest = int(dist.argmin())
+        if dist[nearest] <= threshold:
+            matches[player] = int(boxes[nearest, 2])
+    return matches
+
+
+def match_atd_players_one_to_one(tracking_frame, matrix, boxes, threshold, video_frame,
+                                 home_team, away_team, pitch_dimensions):
+    """One-to-one {player: track_id} ATD<->box matches, with the goalkeeper's team corrected.
+
+    Unlike match_atd_players_to_boxes() (every ATD player independently claims its single
+    nearest box, so two players can legally claim the same one), this solves the full assignment
+    with the Hungarian algorithm (scipy.optimize.linear_sum_assignment) over the (ATD players) x
+    (tracked boxes) distance matrix, so each box is matched to at most one ATD player and vice
+    versa. Pairs farther apart than `threshold` px are dropped, same as any ATD player or box the
+    assignment leaves unmatched -- an ATD point with no one-to-one box is simply left out of the
+    returned matches, exactly like the "player not in atd_matches" skip already did in annotate().
+
+    `video_frame`, `home_team`/`away_team` (dataset.metadata.teams) and `pitch_dimensions`
+    (dataset.metadata.pitch_dimensions) are then used to fix up the goalkeeper: among the matched
+    players, whichever one is alone inside a penalty box (pitch_zones.penalty_box_bounds()) --
+    or, if several share a box, whichever is closest to that box's goal line -- is assigned
+    whichever team defends that side this half (games.half_of_video_frame() /
+    pitch_zones.HOME_SIDE_BY_HALF), not whatever team its own ATD position says. A keeper's ATD
+    team is not always reliable, which is the whole reason for this override. Frames outside both
+    halves get no override.
+
+    Returns (matches, team_override): matches is {player: track_id} for the surviving one-to-one
+    pairs; team_override is {player: team} for any matched player identified as a goalkeeper this
+    frame -- look up a player's effective team with team_override.get(player, player.team).
+    """
+    matches = {}
+    team_override = {}
+
+    if boxes is None or len(boxes) == 0:
+        return matches, team_override
+
+    players, positions = [], []
+    for player, position in tracking_frame.players_coordinates.items():
+        if is_valid(position):
+            players.append(player)
+            positions.append(position)
+
+    if not players:
+        return matches, team_override
+
+    px, py = load_homography.project(
+        matrix,
+        np.array([position.x for position in positions]),
+        np.array([position.y for position in positions]),
+    )
+    atd_pixels = np.stack([px, py], axis=1)
+
+    # (n_players, n_boxes) distance matrix.
+    dist = np.sqrt(
+        (atd_pixels[:, 0, None] - boxes[None, :, 0]) ** 2
+        + (atd_pixels[:, 1, None] - boxes[None, :, 1]) ** 2
+    )
+
+    player_rows, box_cols = linear_sum_assignment(dist)
+    matched_players = []
+    for player_i, box_i in zip(player_rows, box_cols):
+        if dist[player_i, box_i] <= threshold:
+            player = players[player_i]
+            matches[player] = int(boxes[box_i, 2])
+            matched_players.append(player)
+
+    if not matched_players:
+        return matches, team_override
+
+    half = games.half_of_video_frame(games.GAME, video_frame)
+    home_side = pitch_zones.HOME_SIDE_BY_HALF.get(half)
+    if home_side is None:
+        return matches, team_override
+
+    away_side = "right" if home_side == "left" else "left"
+    side_to_team = {home_side: home_team, away_side: away_team}
+    matched_positions = {player: tracking_frame.players_coordinates[player]
+                         for player in matched_players}
+
+    for side, team in side_to_team.items():
+        x_min, x_max, y_min, y_max = pitch_zones.penalty_box_bounds(side, pitch_dimensions)
+        goal_x = 0.0 if side == "left" else 1.0
+        inside = [player for player in matched_players
+                 if x_min <= matched_positions[player].x <= x_max
+                 and y_min <= matched_positions[player].y <= y_max]
+        if not inside:
+            continue
+        keeper = min(inside, key=lambda player: abs(matched_positions[player].x - goal_x))
+        team_override[keeper] = team
+
+    return matches, team_override
+
+
+def detect_goalkeepers_from_boxes(player_boxes, matrices, valid, team_sides, pitch_dimensions,
+                                  video_frames=None, min_votes=5):
+    """{track_id: team} for tracked boxes that are repeatedly the lone box in a penalty area.
+
+    On every frame (restricted to `video_frames`, if given) with a valid homography, each tracked
+    box's bottom-middle point (see load_player_tracks_csv()) is unprojected back to normalised
+    pitch coordinates
+    and tested against both penalty boxes (pitch_zones.penalty_box_bounds()). Whenever exactly
+    one tracked box is found inside a given side's penalty area, that is taken to be the
+    goalkeeper standing alone in it, and its track_id casts one vote for the team that
+    `team_sides` says defends that side. The final team assigned to a track_id is whichever side
+    it voted for most often, so a defender or attacker passing through an empty box on a single
+    frame does not relabel the goalkeeper.
+
+    `team_sides` is either a fixed {team: "left"/"right"} dict (e.g. from
+    pitch_zones.determine_team_sides()) applied to every frame, or a callable video_frame ->
+    {team: "left"/"right"} (or None) for a per-frame mapping -- see
+    pitch_zones.team_sides_for_video_frame(), which is ground truth rather than a guess and also
+    correctly flips the sides at halftime. A frame for which the callable returns None (outside
+    both halves) is skipped.
+
+    `min_votes` drops any track_id whose winning side got fewer than that many votes -- with a
+    track_id a frame, a short-lived/noisy track (e.g. a tracking-ID switch) can easily pick up a
+    stray vote or two just by passing through an empty box, so this filters those out.
+    """
+    votes = defaultdict(Counter)
+    frames = video_frames if video_frames is not None else player_boxes.keys()
+    team_sides_fn = team_sides if callable(team_sides) else (lambda _vf: team_sides)
+
+    for video_frame in frames:
+        boxes = player_boxes.get(video_frame)
+        if boxes is None or len(boxes) == 0:
+            continue
+        if video_frame >= len(valid) or not valid[video_frame]:
+            continue
+
+        frame_sides = team_sides_fn(video_frame)
+        if not frame_sides:
+            continue
+        side_to_team = {side: team for team, side in frame_sides.items()}
+
+        norm_x, norm_y = load_homography.unproject(matrices[video_frame], boxes[:, 0], boxes[:, 1])
+
+        for side, team in side_to_team.items():
+            x_min, x_max, y_min, y_max = pitch_zones.penalty_box_bounds(side, pitch_dimensions)
+            inside = (norm_x >= x_min) & (norm_x <= x_max) & (norm_y >= y_min) & (norm_y <= y_max)
+            print(video_frame, inside)
+            if inside.sum() == 1:
+                track_id = int(boxes[inside.argmax(), 2])
+                votes[track_id][team] += 1
+
+    return {
+        track_id: team_votes.most_common(1)[0][0]
+        for track_id, team_votes in votes.items()
+        if team_votes.most_common(1)[0][1] >= min_votes
+    }
 
 
 class BirdsEye:
@@ -118,7 +365,8 @@ class BirdsEye:
         """ATD y is 0-1 from one touchline; this panel's y-up pitch needs it mirrored."""
         return 1 - y if y > 0.5 else 0.5 + (0.5 - y)
 
-    def render(self, tracking_frame, home_team, track_point_px=None, matrix=None):
+    def render(self, tracking_frame, home_team, track_point_px=None, matrix=None,
+              atd_matches=None, team_override=None):
         """Draw players (ATD) and the ball panel marker.
 
         Normally the ball marker is the ATD ground truth, same as everything else. Pass
@@ -126,19 +374,32 @@ class BirdsEye:
         the frame's homography `matrix` to draw the *tracked* (detection-based) ball here instead
         -- unprojected from pixels back to pitch coordinates -- so it can be compared against the
         players without also cluttering the raw video frame with a second ball marker.
+
+        `atd_matches`/`team_override`, if given, are the same (atd_matches, team_override) pair
+        returned by annotate() -- see match_atd_players_one_to_one() -- so this panel only draws
+        the ATD players that actually have a one-to-one match to a tracked (detection) box on
+        this frame, exactly like the main video overlay, instead of every ATD player regardless
+        of detections. A matched player overridden as the goalkeeper gets its corrected team
+        colour and a "GK" tag, same as on the raw frame.
         """
         image = self.background.copy()
         if tracking_frame is None:
             return image
+        team_override = team_override or {}
         radius = max(4, int(round(0.9 * self.px_per_m)))
         for player, position in tracking_frame.players_coordinates.items():
             if not is_valid(position):
                 continue
+            if atd_matches is not None and player not in atd_matches:
+                continue
 
             y = self._flip_y(position.y)
             centre = self.to_px(position.x * self.length, y * self.width)
-            colour = HOME_COLOUR if player.team == home_team else AWAY_COLOUR
+            colour = HOME_COLOUR if team_override.get(player, player.team) == home_team else AWAY_COLOUR
             cv2.circle(image, centre, radius, colour, -1, cv2.LINE_AA)
+            if player in team_override:
+                cv2.putText(image, "GK", (centre[0] - 10, centre[1] - radius - 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, colour, 1, cv2.LINE_AA)
             cv2.circle(image, centre, radius, (0, 0, 0), 1, cv2.LINE_AA)
 
         ball_radius = max(3, radius - 2)
@@ -204,19 +465,55 @@ def draw_pitch_outline(image, matrix):
 
 
 
-def annotate(image, tracking_frame, matrix, home_team, video_frame, ball_track=None, highlight_player=None):
+def annotate(image, tracking_frame, matrix, home_team, video_frame, ball_track=None,
+            highlight_player=None, tracked_ball_points=None, player_boxes=None,
+            player_match_threshold=25.0, away_team=None, pitch_dimensions=None):
+    """Annotate `image` with the ATD players/ball for `video_frame`.
 
+    player_boxes, if given, is {video_frame: (n, 3) array of (bottom_mid_x, bottom_mid_y, track_id)} --
+    see load_player_tracks_csv(). When set, an ATD player is only drawn if it has a one-to-one
+    match to one of this frame's tracked boxes (match_atd_players_one_to_one(), if `away_team`
+    and `pitch_dimensions` are both given, else the looser nearest-box match_atd_players_to_boxes()
+    as a fallback); every other ATD player, including all of them when this frame has no tracked
+    boxes at all, is skipped.
+
+    With match_atd_players_one_to_one(), a matched player identified as the goalkeeper alone in a
+    penalty box is drawn with its team-corrected colour (see that function) and an extra "GK" tag
+    on its label, rather than whatever team its own ATD position says.
+
+    Returns (image, atd_matches, team_override) -- the latter two, as computed above (None/{} when
+    `player_boxes` is not given), can be handed to BirdsEye.render() so the bird's-eye panel only
+    plots the same detection-matched players as this overlay, instead of every ATD player.
+    """
+
+    atd_matches = None
+    team_override = {}
+    if player_boxes is not None:
+        if away_team is not None and pitch_dimensions is not None:
+            atd_matches, team_override = match_atd_players_one_to_one(
+                tracking_frame, matrix, player_boxes.get(video_frame), player_match_threshold,
+                video_frame, home_team, away_team, pitch_dimensions)
+        else:
+            atd_matches = match_atd_players_to_boxes(
+                tracking_frame, matrix, player_boxes.get(video_frame), player_match_threshold)
 
     for player, position in tracking_frame.players_coordinates.items():
         if not is_valid(position):
             continue
+        if atd_matches is not None and player not in atd_matches:
+            continue
         px, py = load_homography.project(matrix, position.x, position.y)
         centre = (int(round(float(px))), int(round(float(py))))
-        colour = HOME_COLOUR if player.team == home_team else AWAY_COLOUR
+        colour = HOME_COLOUR if team_override.get(player, player.team) == home_team else AWAY_COLOUR
         if player == highlight_player:
             cv2.circle(image, centre, 15, (0, 255, 255), 3, cv2.LINE_AA)
         cv2.circle(image, centre, 9, colour, 2)
-        cv2.putText(image, str(player.jersey_no), (centre[0] - 8, centre[1] - 14),
+        label = str(player.jersey_no)
+        if atd_matches is not None:
+            label = "{} (#{})".format(label, atd_matches[player])
+        if player in team_override:
+            label = "{} GK".format(label)
+        cv2.putText(image, label, (centre[0] - 8, centre[1] - 14),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2, cv2.LINE_AA)
 
     ball = tracking_frame.ball_coordinates
@@ -230,13 +527,16 @@ def annotate(image, tracking_frame, matrix, home_team, video_frame, ball_track=N
     if ball_track is not None:
         draw_ball_track(image, ball_track.get(video_frame))
 
+    if tracked_ball_points is not None:
+        draw_tracked_ball_point(image, tracked_ball_points.get(video_frame))
+
     label = "video frame {} | ATD frame_id {}{}".format(
         video_frame, tracking_frame.frame_id, "" if has_ball else " | ball not tracked")
     x_origin_panel = 1300
     cv2.rectangle(image, (x_origin_panel, 0), (len(label) * 11 + 20, 34), (0, 0, 0), -1)
     cv2.putText(image, label, (10 + x_origin_panel // 2, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2,
                 cv2.LINE_AA)
-    return image
+    return image, atd_matches, team_override
 
 
 def draw_touch_alert(image):
@@ -300,7 +600,9 @@ def overlay_bottom(image, panel, opacity):
 
 
 def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, out_path, play,
-                scale, opacity=0.6, panel_fraction=0.4, gt=None, ball_track=None, ball_in_birdseye=False):
+                scale, opacity=0.6, panel_fraction=0.4, gt=None, ball_track=None,
+                ball_in_birdseye=False, tracked_ball_points=None, player_boxes=None,
+                player_match_threshold=25.0, away_team=None, pitch_dimensions=None):
 
 
     """Annotate video frames start..end (inclusive), write them to an MP4 and optionally play.
@@ -311,6 +613,9 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
     ball_in_birdseye=True additionally draws the *tracked* (detection-based) ball in the bird's-
     eye panel, unprojected from pixels to pitch coordinates via the frame's homography -- the
     ATD ground-truth yellow point and the tracked magenta point on the raw video frame are kept.
+
+    tracked_ball_points, if given, overlays a merged ball-tracking CSV's (x, y) point (see
+    load_tracked_ball_points()) as a green dot, independent of ball_track/ball_in_birdseye.
     """
     fps = capture.get(cv2.CAP_PROP_FPS) or games.GAMES[games.GAME]["fps"]
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) * scale)
@@ -347,12 +652,19 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
                 pred_label = output.label
 
             if tracking_frame is not None and valid[video_frame]:
-                annotate(image, tracking_frame, matrices[video_frame], home_team, video_frame,
-                         ball_track=ball_track,
-                         highlight_player=highlighted_player if video_frame < touch_alert_until
-                         else None)
-            elif ball_track is not None:
-                draw_ball_track(image, track_point)
+                _, atd_matches, team_override = annotate(
+                    image, tracking_frame, matrices[video_frame], home_team, video_frame,
+                    ball_track=ball_track,
+                    highlight_player=highlighted_player if video_frame < touch_alert_until
+                    else None, tracked_ball_points=tracked_ball_points,
+                    player_boxes=player_boxes, player_match_threshold=player_match_threshold,
+                    away_team=away_team, pitch_dimensions=pitch_dimensions)
+            else:
+                atd_matches, team_override = None, {}
+                # if ball_track is not None:
+                #     draw_ball_track(image, track_point)
+                if tracked_ball_points is not None:
+                    draw_tracked_ball_point(image, tracked_ball_points.get(video_frame))
 
             if scale != 1.0:
                 image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
@@ -360,9 +672,11 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
             if ball_in_birdseye and track_point is not None and valid[video_frame]:
                 panel = birds_eye.render(tracking_frame, home_team,
                                          track_point_px=track_point["centre"],
-                                         matrix=matrices[video_frame])
+                                         matrix=matrices[video_frame],
+                                         atd_matches=atd_matches, team_override=team_override)
             else:
-                panel = birds_eye.render(tracking_frame, home_team)
+                panel = birds_eye.render(tracking_frame, home_team,
+                                         atd_matches=atd_matches, team_override=team_override)
             overlay_bottom(image, panel, opacity)
 
             if video_frame < touch_alert_until:
@@ -429,6 +743,34 @@ def main():
     parser.add_argument("--max-age", type=int, default=10,
                         help="frames to coast the ball track without a matching detection "
                              "before dropping it (default 10)")
+    parser.add_argument("--tracker", choices=("sort", "bytetrack"), default="sort",
+                        help="ball-tracking algorithm: SORT-style (default) or the real "
+                             "BYTETracker (vendored from the ByteTrack submodule)")
+    parser.add_argument("--tracked-ball-csv", default=DEFAULT_TRACKED_BALL_CSV,
+                        help="merged ball-tracking CSV (frame,x,y[,source,...], e.g. the output "
+                             "of scripts/ball_tracking/merge_sort_atd_ball.py) to overlay as a "
+                             "green point, independent of --tracker/--detections (default "
+                             "assets/detections/tracked_ball.csv, skipped if not found)")
+    parser.add_argument("--no-tracked-ball-csv", action="store_true",
+                        help="don't overlay --tracked-ball-csv even if it exists")
+    parser.add_argument("--player-tracks-csv", default=None,
+                        help="tracked-players CSV (frame,track_id,x1,y1,x2,y2[,score], e.g. the "
+                             "output of scripts/players_detection/track_with_bytetrack.py); when "
+                             "given, an ATD player is only drawn if its projected position is "
+                             "within --player-match-threshold px of a tracked box on that frame "
+                             "-- unmatched players are left out of the visualization entirely")
+    parser.add_argument("--player-match-threshold", type=float, default=60.0,
+                        help="max pixel distance between an ATD player position and its nearest "
+                             "tracked box's feet point, used with --player-tracks-csv (default 25)")
+    parser.add_argument("--detect-goalkeepers", action="store_true",
+                        help="with --player-tracks-csv: detect goalkeepers as the tracked box "
+                             "that is repeatedly the only one inside a penalty area, and print "
+                             "the team (left/right side's defender) assigned to each such "
+                             "track_id -- see detect_goalkeepers_from_boxes()")
+    parser.add_argument("--goalkeeper-min-votes", type=int, default=5,
+                        help="min frames a track_id must be alone in a penalty area to be "
+                             "reported as a goalkeeper, used with --detect-goalkeepers "
+                             "(default 5)")
     parser.add_argument("--video-type", type=str, default="tactical")
 
     parser.add_argument("--gt", default=GT_PATH,
@@ -452,9 +794,14 @@ def main():
                                          raw_data=paths["atd_raw"], limit=limit)
     by_frame_id = {frame.frame_id: frame for frame in dataset.frames}
     home_team = dataset.metadata.teams[0]
+    away_team = dataset.metadata.teams[1]
+    pitch_dimensions = dataset.metadata.pitch_dimensions
 
     print("loading homography...")
     matrices, _, valid = load_homography.load(source=args.video_type)
+
+    frame_range = (range(args.clip[0], args.clip[1] + 1) if args.clip
+                   else range(min(args.frames), max(args.frames) + 1))
 
     detections = None
     if not args.no_detections and os.path.exists(args.detections):
@@ -465,13 +812,52 @@ def main():
 
     ball_track = None
     if detections:
-        frame_range = (range(args.clip[0], args.clip[1] + 1) if args.clip
-                        else range(min(args.frames), max(args.frames) + 1))
         references = build_ball_references(frame_range, by_frame_id, matrices, valid)
         print("tracking ball over %d frames (%d with an ATD reference)..."
               % (len(frame_range), len(references)))
-        ball_track = track_ball(detections, frame_range, references, args.min_detection_score,
-                                 args.gating_distance, args.max_age)
+        if args.tracker == "bytetrack":
+            probe = cv2.VideoCapture(paths["video"])
+            frame_size = (int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                         int(probe.get(cv2.CAP_PROP_FRAME_WIDTH)))
+            probe.release()
+            ball_track = track_ball_native_bytetrack(detections, frame_range, frame_size,
+                                                     references,
+                                                     track_thresh=args.min_detection_score,
+                                                     gating_distance=args.gating_distance,
+                                                     track_buffer=args.max_age)
+        else:
+            ball_track = track_ball(detections, frame_range, references,
+                                    args.min_detection_score, args.gating_distance, args.max_age)
+
+    tracked_ball_points = None
+    if not args.no_tracked_ball_csv and os.path.exists(args.tracked_ball_csv):
+        print("loading tracked ball points from %s..." % args.tracked_ball_csv)
+        tracked_ball_points = load_tracked_ball_points(args.tracked_ball_csv)
+    elif not args.no_tracked_ball_csv:
+        print("tracked ball CSV not found, skipping: %s" % args.tracked_ball_csv)
+
+    player_boxes = None
+    if args.player_tracks_csv:
+        if os.path.exists(args.player_tracks_csv):
+            print("loading tracked player boxes from %s..." % args.player_tracks_csv)
+            player_boxes = load_player_tracks_csv(args.player_tracks_csv)
+        else:
+            print("player tracks CSV not found, skipping: %s" % args.player_tracks_csv)
+
+    if args.detect_goalkeepers:
+        if player_boxes is None:
+            parser.error("--detect-goalkeepers needs --player-tracks-csv")
+        team_sides_fn = lambda video_frame: pitch_zones.team_sides_for_video_frame(
+            video_frame, home_team, away_team, game=games.GAME)
+        goalkeepers = detect_goalkeepers_from_boxes(
+            player_boxes, matrices, valid, team_sides_fn, pitch_dimensions,
+            video_frames=frame_range, min_votes=args.goalkeeper_min_votes)
+
+        sample_sides = team_sides_fn(frame_range.start) or {}
+        print("detected goalkeepers (track_id -> team):")
+        for track_id, team in sorted(goalkeepers.items()):
+            print("  track_id %d -> %s (%s box)"
+                 % (track_id, team.name, sample_sides.get(team, "?")))
 
     os.makedirs(args.out, exist_ok=True)
     capture = cv2.VideoCapture(paths["video"])
@@ -496,7 +882,12 @@ def main():
                         panel_fraction=args.panel_width,
                         gt=load_gt(args.gt) if args.gt else None,
                         ball_track=ball_track,
-                        ball_in_birdseye=args.ball_birdseye)
+                        ball_in_birdseye=args.ball_birdseye,
+                        tracked_ball_points=tracked_ball_points,
+                        player_boxes=player_boxes,
+                        player_match_threshold=args.player_match_threshold,
+                        away_team=away_team,
+                        pitch_dimensions=pitch_dimensions)
 
 
         finally:
@@ -515,8 +906,11 @@ def main():
                 continue
 
             image = read_video_frame(capture, video_frame)
-            annotate(image, tracking_frame, matrices[video_frame], home_team, video_frame,
-                     ball_track)
+            _, atd_matches, team_override = annotate(
+                image, tracking_frame, matrices[video_frame], home_team, video_frame,
+                ball_track, tracked_ball_points=tracked_ball_points,
+                player_boxes=player_boxes, player_match_threshold=args.player_match_threshold,
+                away_team=away_team, pitch_dimensions=pitch_dimensions)
 
             if args.ball_birdseye:
                 track_point = ball_track.get(video_frame) if ball_track is not None else None
@@ -524,9 +918,11 @@ def main():
                 if track_point is not None:
                     panel = birds_eye.render(tracking_frame, home_team,
                                              track_point_px=track_point["centre"],
-                                             matrix=matrices[video_frame])
+                                             matrix=matrices[video_frame],
+                                             atd_matches=atd_matches, team_override=team_override)
                 else:
-                    panel = birds_eye.render(tracking_frame, home_team)
+                    panel = birds_eye.render(tracking_frame, home_team,
+                                             atd_matches=atd_matches, team_override=team_override)
                 overlay_bottom(image, panel, args.opacity)
 
             out_path = os.path.join(args.out, "frame_%06d.jpg" % video_frame)

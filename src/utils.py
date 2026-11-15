@@ -9,6 +9,7 @@ telling you.
 matplotlib is imported inside the functions rather than at module scope, so importing this module
 costs nothing in an environment that only wants the loaders.
 """
+from enum import Enum
 
 import numpy as np
 
@@ -19,6 +20,18 @@ PITCH_LENGTH, PITCH_WIDTH = 105.0, 68.0
 HOME_COLOUR, AWAY_COLOUR, BALL_COLOUR = "#d62728", "#1f77b4", "#ffffff"
 GRASS, LINE = "#3f8f4f", "#ffffff"
 
+
+class GAME_PERIODS(Enum):
+    """
+     **1st half** | **11,185** | **90,651** | 79,467 | **yes** |
+    | halftime | 90,652 | 110,807 | 20,156 | no |
+    | **2nd half** | **110,808** | **190,197** | 79,390 | **yes** |
+    | after the final whistle | 190,198
+    """
+    START_FIRST_HALF = 11185
+    END_FIRST_HALF = 90651
+    START_SECOND_HALF = 110808
+    END_SECOND_HALF = 190197
 
 def draw_pitch(ax=None, length=PITCH_LENGTH, width=PITCH_WIDTH):
     """A plain football pitch in metres, origin at a corner. Returns the axes.

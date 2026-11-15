@@ -1,3 +1,6 @@
 [submodule "mtah_challenge"]
 	path = mtah_challenge
 	url = https://github.com/metrica-sports/more-than-a-hack-2027
+[submodule "ByteTrack"]
+	path = ByteTrack
+	url = https://github.com/ifzhang/ByteTrack.git

@@ -10,4 +10,21 @@ dependencies = [
     "opencv-python>=5.0.0.93",
     "pandas>=3.1.0",
     "pytesseract>=0.3.13",
+    "torch>=2.0",
+    "scipy>=1.10",
+    "lap>=0.5",
+    "cython-bbox>=0.1.5",
+    "norfair>=2.1.1",
+    "ultralytics>=8.4.0",
 ]
+
+[tool.uv.sources]
+# ByteTrack's tracker only needs CPU tensors (it never calls a CUDA kernel); the default PyPI
+# torch wheel drags in the whole nvidia-cu* CUDA toolkit as dependencies, which is unnecessary
+# weight for this project.
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

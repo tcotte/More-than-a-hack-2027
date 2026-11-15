@@ -50,7 +50,7 @@ import load_smart_tagging  # noqa: E402
 from ball_possession.possession_model import is_valid  # noqa: E402
 from visualize_video_frames import BirdsEye, build_ball_references, draw_ball_track  # noqa: E402
 from detections.ball import load_ball_detections  # noqa: E402
-from detections.tracker import track_ball  # noqa: E402
+from detections.tracker import track_ball, track_ball_native_bytetrack  # noqa: E402
 
 DEFAULT_CORRESPONDENCE_CSV = os.path.join(os.path.dirname(SRC_DIR),
 "assets", "frame_timestamps", "frame_correspondence.csv")
@@ -286,6 +286,9 @@ def main():
     parser.add_argument("--max-age", type=int, default=10,
                         help="frames to coast the ball track without a matching detection "
                              "before dropping it (default 10)")
+    parser.add_argument("--tracker", choices=("sort", "bytetrack"), default="sort",
+                        help="ball-tracking algorithm: SORT-style (default) or BYTE-style "
+                             "(also tries low-score detections to recover an existing track)")
     parser.add_argument("--no-smart-tagging", action="store_true",
                         help="skip the Smart Tagging banners on the tactical panel")
     args = parser.parse_args()
@@ -327,9 +330,20 @@ def main():
                                                tracking_source.matrices, tracking_source.valid)
             print("tracking ball over %d %s frames (%d with an ATD reference)..."
                   % (len(frame_range), source, len(references)))
-            ball_tracks[source] = track_ball(detections, frame_range, references,
-                                             args.min_detection_score, args.gating_distance,
-                                             args.max_age)
+            if args.tracker == "bytetrack":
+                video_path = games.asset_paths(source=source)["video"]
+                probe = cv2.VideoCapture(video_path)
+                frame_size = (int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                             int(probe.get(cv2.CAP_PROP_FRAME_WIDTH)))
+                probe.release()
+                ball_tracks[source] = track_ball_native_bytetrack(
+                    detections, frame_range, frame_size, references,
+                    track_thresh=args.min_detection_score, gating_distance=args.gating_distance,
+                    track_buffer=args.max_age)
+            else:
+                ball_tracks[source] = track_ball(detections, frame_range, references,
+                                                 args.min_detection_score, args.gating_distance,
+                                                 args.max_age)
 
     smart_tagging_events = None
     if not args.no_smart_tagging:
