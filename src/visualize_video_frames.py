@@ -11,6 +11,7 @@ https://universe.roboflow.com/roboflow-jvuqo/football-players-detection-3zvbc
 https://github.com/JohnComonitski/FootballTrackingDataGeneration?source=post_page-----1b44924968e9-----------------------------------------
 """
 from ball_possession.detection_input import frame_with_detected_ball
+from ball_possession.predict_possession import ROOT
 from detections.ball import load_ball_detections
 from detections.tracker import track_ball, track_ball_native_bytetrack
 
@@ -910,8 +911,7 @@ def main():
                         gt=load_gt(args.gt) if args.gt else None,
                         ball_track=ball_track,
                         ball_in_birdseye=args.ball_birdseye,
-                        possession_ball_source=args.possession_ball_source)
-                        ball_in_birdseye=args.ball_birdseye,
+                        possession_ball_source=args.possession_ball_source,
                         tracked_ball_points=tracked_ball_points,
                         player_boxes=player_boxes,
                         player_match_threshold=args.player_match_threshold,
