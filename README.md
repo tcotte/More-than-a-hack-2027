@@ -1,3 +1,40 @@
+## Commands
+
+The visualizer uses `games.py` and the homography utilities from `mtah_challenge`. Match data
+defaults to `mtah_challenge\data`; if your data is in `src\data`, set the following in PowerShell
+from the repository root:
+
+```powershell
+$env:MTAH_DATA_DIR = (Resolve-Path .\src\data).Path
+.\.venv\Scripts\python.exe src\visualize_video_frames.py --clip 23000 30000 --play --video-type tactical --detections "assets\detections\ball_detection_first_half_yolo26_tactical_sliced.csv" --ball-birdseye --possession-ball-source detections
+```
+
+The output is written to `frames_out` by default. `--possession-ball-source detections` uses
+the tracked CSV ball position for possession and touch detection, with ATD player positions.
+The tracker uses the ATD ball to select between candidate detections when available and can
+extrapolate for up to `--max-age` frames. When the track or homography is missing, the model
+treats the ball as missing instead of falling back to ATD. Without this option, possession
+continues to use the ATD ball.
+
+### Evaluate possession with tactical detections
+
+From Git Bash at the repository root, with the match data in `src/data`:
+
+```bash
+export MTAH_DATA_DIR="$(pwd -W)/src/data"
+./.venv/Scripts/python.exe src/ball_possession/predict_possession.py --start 11185 --end 18684 --detections "assets/detections/ball_detection_first_half_yolo26_tactical_sliced.csv" --name possession_yolo_tactical_public
+./.venv/Scripts/python.exe mtah_challenge/evaluation/run_evaluation.py --results evaluation/results --out evaluation
+```
+
+The public ground truth covers frames 11185–18684; the detections begin at 11190.
+The submission has 199319 rows, with `X` outside the selected interval, and is suitable only
+for this public-window test, not a full-match submission. The ball track uses the same ATD-guided
+association and default tracker parameters as the visualizer. The score is a pipeline check, not
+a reliable full-match ranking; see `mtah_challenge/EVALUATION.md`.
+
+Multi-view command (visualize both videos with ball track and Smart Tagging banners): python.exe multi_view.py --broadcast-video "assets\video\broadcast.mp4" --tactical-video "assets\video\tactical.mp4" --correspondence-csv "assets\frame_correspondence.csv" --detections "assets\ball_detection_first_half_yolo26_sliced.csv" --play --ball-birdseye
+
+
 # More Than a Hack 2027
 
 This repository contains the code and data for the More Than a Hack 2027 evaluation. The evaluation is based on a single 

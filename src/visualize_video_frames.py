@@ -10,6 +10,7 @@ https://universe.roboflow.com/roboflow-jvuqo/football-players-detection-3zvbc
 
 https://github.com/JohnComonitski/FootballTrackingDataGeneration?source=post_page-----1b44924968e9-----------------------------------------
 """
+from ball_possession.detection_input import frame_with_detected_ball
 from detections.ball import load_ball_detections
 from detections.tracker import track_ball, track_ball_native_bytetrack
 
@@ -536,7 +537,7 @@ def annotate(image, tracking_frame, matrix, home_team, video_frame, ball_track=N
     cv2.rectangle(image, (x_origin_panel, 0), (len(label) * 11 + 20, 34), (0, 0, 0), -1)
     cv2.putText(image, label, (10 + x_origin_panel // 2, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2,
                 cv2.LINE_AA)
-    return image, atd_matches, team_override
+    return image
 
 
 def draw_touch_alert(image):
@@ -602,7 +603,7 @@ def overlay_bottom(image, panel, opacity):
 def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, out_path, play,
                 scale, opacity=0.6, panel_fraction=0.4, gt=None, ball_track=None,
                 ball_in_birdseye=False, tracked_ball_points=None, player_boxes=None,
-                player_match_threshold=25.0, away_team=None, pitch_dimensions=None):
+                player_match_threshold=25.0, away_team=None, pitch_dimensions=None,possession_ball_source="atd"):
 
 
     """Annotate video frames start..end (inclusive), write them to an MP4 and optionally play.
@@ -641,10 +642,14 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
             tracking_frame = by_frame_id.get(video_frame + 1)
             track_point = ball_track.get(video_frame) if ball_track is not None else None
 
-            output = model.update(video_frame, tracking_frame)
+            model_frame = tracking_frame
+            if possession_ball_source == "detections":
+                matrix = matrices[video_frame] if valid[video_frame] else None
+                model_frame = frame_with_detected_ball(tracking_frame, track_point, matrix)
+            output = model.update(video_frame, model_frame)
             if output.touch_player is not None:
-                highlighted_player = output.touch_player
                 print("Frame {}: Touche probable".format(video_frame), flush=True)
+                highlighted_player = output.touch_player
                 touch_alert_until = video_frame + fps
             if output.label != pred_label:
                 if pred_label != "X":
@@ -677,6 +682,9 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
             else:
                 panel = birds_eye.render(tracking_frame, home_team,
                                          atd_matches=atd_matches, team_override=team_override)
+                panel = birds_eye.render(
+                    model_frame if ball_in_birdseye and possession_ball_source == "detections"
+                    else tracking_frame, home_team)
             overlay_bottom(image, panel, opacity)
 
             if video_frame < touch_alert_until:
@@ -714,7 +722,7 @@ def main():
                         help="video frames (0-based) to render")
     parser.add_argument("--limit", type=int, default=12000,
                         help="ATD frames to load (raised automatically to cover --frames)")
-    parser.add_argument("--out", default=os.path.join(HERE, "../more-than-a-hack-2027/starter/frames_out"))
+    parser.add_argument("--out", default=os.path.join(ROOT, "frames_out"))
     parser.add_argument("--show", action="store_true", help="display each frame in a window")
     parser.add_argument("--clip", type=int, nargs=2, metavar=("START", "END"),
                         help="render video frames START..END as an annotated MP4 instead")
@@ -732,9 +740,11 @@ def main():
                              "yellow (ATD) and magenta (tracked) points on the raw video frame")
     parser.add_argument("--detections", default=DEFAULT_DETECTIONS,
                         help="CSV of ball detections (frame,x1,y1,x2,y2,score,class_id) used "
-                             "for SORT-style ball tracking, default assets/ball_detection.csv")
+                             "for SORT-style ball tracking, default assets/detections/ball_detection.csv")
     parser.add_argument("--no-detections", action="store_true",
                         help="don't track/overlay the ball from detections")
+    parser.add_argument("--possession-ball-source", choices=("atd", "detections"), default="atd",
+                        help="ball position used for clip possession prediction (default: atd)")
     parser.add_argument("--min-detection-score", type=float, default=0.3,
                         help="ignore detections scoring below this threshold (default 0.3)")
     parser.add_argument("--gating-distance", type=float, default=80.0,
@@ -783,6 +793,15 @@ def main():
         parser.error("--panel-width must be in (0, 1]")
     if args.ball_birdseye and args.no_detections:
         parser.error("--ball-birdseye needs ball detections; drop --no-detections")
+    if args.possession_ball_source == "detections":
+        if not args.clip:
+            parser.error("--possession-ball-source detections requires --clip")
+        if args.no_detections:
+            parser.error("--possession-ball-source detections cannot use --no-detections")
+        if not os.path.isfile(args.detections):
+            parser.error("detections file not found: %s" % args.detections)
+        print("possession uses the detection track and ATD player positions; "
+              "ATD ball positions guide detection association")
 
     paths = games.asset_paths(source=args.video_type)
     games.require(["video", "atd_meta", "atd_raw", "homography"], source=args.video_type)
@@ -809,6 +828,9 @@ def main():
         detections = load_ball_detections(args.detections)
     elif not args.no_detections:
         print("detections file not found, skipping: %s" % args.detections)
+
+    if args.possession_ball_source == "detections" and not detections:
+        parser.error("detections file contains no detections: %s" % args.detections)
 
     ball_track = None
     if detections:
@@ -858,6 +880,11 @@ def main():
         for track_id, team in sorted(goalkeepers.items()):
             print("  track_id %d -> %s (%s box)"
                  % (track_id, team.name, sample_sides.get(team, "?")))
+        ball_track = track_ball(detections, frame_range, references, args.min_detection_score,
+                                 args.gating_distance, args.max_age)
+        if args.possession_ball_source == "detections" and not ball_track:
+            print("warning: no ball track found for the selected clip; possession will "
+                  "treat the ball as missing")
 
     os.makedirs(args.out, exist_ok=True)
     capture = cv2.VideoCapture(paths["video"])
@@ -882,6 +909,8 @@ def main():
                         panel_fraction=args.panel_width,
                         gt=load_gt(args.gt) if args.gt else None,
                         ball_track=ball_track,
+                        ball_in_birdseye=args.ball_birdseye,
+                        possession_ball_source=args.possession_ball_source)
                         ball_in_birdseye=args.ball_birdseye,
                         tracked_ball_points=tracked_ball_points,
                         player_boxes=player_boxes,

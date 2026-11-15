@@ -11,3 +11,4 @@ wheels/
 src/data/
 assets/detections/ball_detection_first_half_yolo26.csv
 assets/detections/ball_detection.csv
+frames_out/
