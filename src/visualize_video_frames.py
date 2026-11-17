@@ -12,13 +12,6 @@ https://github.com/JohnComonitski/FootballTrackingDataGeneration?source=post_pag
 """
 import csv
 
-from ball_possession.detection_input import frame_with_detected_ball
-from ball_possession.predict_possession import ROOT
-from detections.ball import load_ball_detections
-
-from detections.tracker import track_ball, track_ball_native_bytetrack
-
-
 
 """Overlay the ATD tracking (players + ball) on frames of the tactical video.
 
@@ -53,6 +46,13 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "mtah_challenge"))
 sys.path.insert(0, HERE)
 
+from ball_possession.detection_input import (  # noqa: E402
+    build_ball_references, frame_with_detected_ball,
+    load_possession_ball_track, load_smart_attacking_hints, possession_frame,
+)
+from detections.ball import load_ball_detections  # noqa: E402
+from detections.tracker import track_ball, track_ball_native_bytetrack  # noqa: E402
+
 from kloppy import metrica  # noqa: E402
 
 import games  # noqa: E402
@@ -60,7 +60,6 @@ import games  # noqa: E402
 import pitch_zones  # noqa: E402
 
 from ball_possession.possession_model import PossessionModel, is_valid  # noqa: E402
-from ball_possession.detection_input import build_ball_references, frame_with_detected_ball  # noqa: E402
 from starter import load_homography
 from starter.load_homography import load, project # noqa: E402
 
@@ -533,7 +532,7 @@ def annotate(image, tracking_frame, matrix, home_team, video_frame, ball_track=N
     cv2.rectangle(image, (x_origin_panel, 0), (len(label) * 11 + 20, 34), (0, 0, 0), -1)
     cv2.putText(image, label, (10 + x_origin_panel // 2, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2,
                 cv2.LINE_AA)
-    return image
+    return image, atd_matches, team_override
 
 
 def draw_touch_alert(image):
@@ -599,7 +598,9 @@ def overlay_bottom(image, panel, opacity):
 def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, out_path, play,
                 scale, opacity=0.6, panel_fraction=0.4, gt=None, ball_track=None,
                 ball_in_birdseye=False, tracked_ball_points=None, player_boxes=None,
-                player_match_threshold=25.0, away_team=None, pitch_dimensions=None,possession_ball_source="atd"):
+                player_match_threshold=25.0, away_team=None, pitch_dimensions=None,
+                possession_ball_source="atd", possession_ball_track=None,
+                missing_ball_label="D", smart_hints=None):
 
 
 
@@ -622,12 +623,12 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
     writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
     delay = max(1, int(1000 / fps))
     window = "ATD overlay (space: pause, q: quit)"
-    model = PossessionModel(home_team)
+    model = PossessionModel(home_team, missing_ball_label=missing_ball_label)
     touch_alert_until = -1
     highlighted_player = None
     gt_label = gt.get(start - 1) if gt else None
     change_until = -1
-    pred_label, pred_change_until = "X", -1
+    pred_label, pred_change_until = model.label, -1
 
     capture.set(cv2.CAP_PROP_POS_FRAMES, start)
     try:
@@ -640,10 +641,13 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
             track_point = ball_track.get(video_frame) if ball_track is not None else None
 
             model_frame = tracking_frame
-            if possession_ball_source == "detections":
+            if possession_ball_source in ("detections", "tracked"):
                 matrix = matrices[video_frame] if valid[video_frame] else None
-                model_frame = frame_with_detected_ball(tracking_frame, track_point, matrix)
-            output = model.update(video_frame, model_frame)
+                selected_track = (ball_track if possession_ball_source == "detections"
+                                  else possession_ball_track)
+                model_frame = possession_frame(tracking_frame, selected_track, video_frame, matrix)
+            output = model.update(video_frame, model_frame,
+                                  smart_hints.get(video_frame) if smart_hints is not None else None)
             if output.touch_player is not None:
                 print("Frame {}: Touche probable".format(video_frame), flush=True)
                 highlighted_player = output.touch_player
@@ -671,7 +675,8 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
             if scale != 1.0:
                 image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
 
-            if ball_in_birdseye and track_point is not None and valid[video_frame]:
+            if (ball_in_birdseye and possession_ball_source != "tracked"
+                    and track_point is not None and valid[video_frame]):
                 panel = birds_eye.render(tracking_frame, home_team,
                                          track_point_px=track_point["centre"],
                                          matrix=matrices[video_frame],
@@ -679,7 +684,7 @@ def render_clip(capture, start, end, by_frame_id, matrices, valid, home_team, ou
             else:
 
                 panel = birds_eye.render(
-                    model_frame if ball_in_birdseye and possession_ball_source == "detections"
+                    model_frame if ball_in_birdseye and possession_ball_source in ("detections", "tracked")
                     else tracking_frame, home_team)
             overlay_bottom(image, panel, opacity)
 
@@ -739,8 +744,12 @@ def main():
                              "for SORT-style ball tracking, default assets/detections/ball_detection.csv")
     parser.add_argument("--no-detections", action="store_true",
                         help="don't track/overlay the ball from detections")
-    parser.add_argument("--possession-ball-source", choices=("atd", "detections"), default="atd",
+    parser.add_argument("--possession-ball-source", choices=("atd", "detections", "tracked"), default="atd",
                         help="ball position used for clip possession prediction (default: atd)")
+    parser.add_argument("--smart-tagging", action="store_true",
+                        help="use tactical Smart Tagging as an additional team hint for the clip")
+    parser.add_argument("--missing-ball-label", choices=("D", "X"), default="D",
+                        help="label after sustained ball tracking loss (default: D)")
     parser.add_argument("--min-detection-score", type=float, default=0.3,
                         help="ignore detections scoring below this threshold (default 0.3)")
     parser.add_argument("--gating-distance", type=float, default=80.0,
@@ -778,7 +787,6 @@ def main():
                              "reported as a goalkeeper, used with --detect-goalkeepers "
                              "(default 5)")
     parser.add_argument("--video-type", type=str, default="tactical")
-
     parser.add_argument("--gt", default=GT_PATH,
                         help="with --clip: possession GT CSV (frame,label); '' to disable")
 
@@ -787,8 +795,10 @@ def main():
         parser.error("--opacity must be between 0 and 1")
     if not 0.0 < args.panel_width <= 1.0:
         parser.error("--panel-width must be in (0, 1]")
-    if args.ball_birdseye and args.no_detections:
+    if args.ball_birdseye and args.no_detections and args.possession_ball_source != "tracked":
         parser.error("--ball-birdseye needs ball detections; drop --no-detections")
+    if args.smart_tagging and (not args.clip or args.video_type != "tactical"):
+        parser.error("--smart-tagging requires a tactical --clip")
     if args.possession_ball_source == "detections":
         if not args.clip:
             parser.error("--possession-ball-source detections requires --clip")
@@ -798,6 +808,11 @@ def main():
             parser.error("detections file not found: %s" % args.detections)
         print("possession uses the detection track and ATD player positions; "
               "ATD ball positions guide detection association")
+    if args.possession_ball_source == "tracked":
+        if not args.clip:
+            parser.error("--possession-ball-source tracked requires --clip")
+        if not os.path.isfile(args.tracked_ball_csv):
+            parser.error("tracked ball file not found: %s" % args.tracked_ball_csv)
 
     paths = games.asset_paths(source=args.video_type)
     games.require(["video", "atd_meta", "atd_raw", "homography"], source=args.video_type)
@@ -817,6 +832,11 @@ def main():
 
     frame_range = (range(args.clip[0], args.clip[1] + 1) if args.clip
                    else range(min(args.frames), max(args.frames) + 1))
+    smart_hints = {}
+    if args.smart_tagging:
+        smart_hints = load_smart_attacking_hints(args.clip[0], args.clip[1],
+                                                home_team.name, away_team.name)
+        print("using Smart Tagging team hints on %d frames" % len(smart_hints))
 
     detections = None
     if not args.no_detections and os.path.exists(args.detections):
@@ -853,6 +873,15 @@ def main():
         tracked_ball_points = load_tracked_ball_points(args.tracked_ball_csv)
     elif not args.no_tracked_ball_csv:
         print("tracked ball CSV not found, skipping: %s" % args.tracked_ball_csv)
+
+    possession_ball_track = None
+    if args.possession_ball_source == "tracked":
+        possession_ball_track = load_possession_ball_track(
+            args.tracked_ball_csv, args.clip[0], args.clip[1])
+        print("possession uses %d tracked positions; ffill and missing rows are ignored"
+              % len(possession_ball_track))
+        if not possession_ball_track:
+            print("warning: no usable tracked ball positions in the selected clip")
 
     player_boxes = None
     if args.player_tracks_csv:
@@ -907,6 +936,9 @@ def main():
                         ball_track=ball_track,
                         ball_in_birdseye=args.ball_birdseye,
                         possession_ball_source=args.possession_ball_source,
+                        possession_ball_track=possession_ball_track,
+                        missing_ball_label=args.missing_ball_label,
+                        smart_hints=smart_hints,
                         tracked_ball_points=tracked_ball_points,
                         player_boxes=player_boxes,
                         player_match_threshold=args.player_match_threshold,

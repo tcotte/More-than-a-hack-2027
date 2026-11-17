@@ -22,21 +22,40 @@ extrapolate for up to `--max-age` frames. When the track or homography is missin
 treats the ball as missing instead of falling back to ATD. Without this option, possession
 continues to use the ATD ball.
 
-### Evaluate possession with tactical detections
+### How possession is estimated
 
-From Git Bash at the repository root, with the match data in `src/data`:
+The submission uses the heuristic in `src/ball_possession`, not a trained possession model.
+It combines tactical ATD player positions, homography, the precomputed
+`assets/trackings/ball/tracked_ball.csv` and, with `--smart-tagging`, tactical attacking-phase
+hints. The export does not use broadcast observations or player-match corrections.
 
-```bash
-export MTAH_DATA_DIR="$(pwd -W)/src/data"
-./.venv/Scripts/python.exe src/ball_possession/predict_possession.py --start 11185 --end 18684 --detections "assets/detections/ball_detection_first_half_yolo26_tactical_sliced.csv" --name possession_yolo_tactical_public
-./.venv/Scripts/python.exe mtah_challenge/evaluation/run_evaluation.py --results evaluation/results --out evaluation
+The ball track uses `yolo_sort` and `atd` positions; `ffill` and `missing` are not treated as
+observations. Probable touches are based on ball movement and a player within 3 m. An opposing
+team's touch must be confirmed by five frames near the ball, with five extra frames when an
+unambiguous Smart Tagging hint conflicts; team changes are separated by at least 50 frames.
+The model starts with Away and retains its state on a missing ball. Dead-ball rules use stationary
+or out-of-pitch ball positions and slow player movement. See [KekeLaPlancha.md](KekeLaPlancha.md)
+for the precise rules and limitations.
+
+The CSV uses tactical video frame indices: video frame `n` uses ATD frame ID `n + 1`. It contains
+199,319 data rows with `H`, `A`, `D` or `X`; outside an explicitly requested `--start`/`--end`
+range, labels are `X`. The submitted full-match run uses `--smart-tagging`.
+
+### Generate and validate the possession CSV
+
+From PowerShell at the repository root, after installing the dependencies in `pyproject.toml`
+and placing the challenge assets under `src\data`:
+
+```powershell
+$env:MTAH_DATA_DIR = (Resolve-Path .\src\data).Path
+.\.venv\Scripts\python.exe src\ball_possession\predict_possession.py --smart-tagging --name KekeLaPlancha --out evaluation\results
+.\.venv\Scripts\python.exe mtah_challenge\evaluation\validate_submission.py evaluation\results\KekeLaPlancha.csv
 ```
 
-The public ground truth covers frames 11185–18684; the detections begin at 11190.
-The submission has 199319 rows, with `X` outside the selected interval, and is suitable only
-for this public-window test, not a full-match submission. The ball track uses the same ATD-guided
-association and default tracker parameters as the visualizer. The score is a pipeline check, not
-a reliable full-match ranking; see `mtah_challenge/EVALUATION.md`.
+The prediction command requires the exact precomputed ball track; its complete provenance and
+regeneration from the original match assets still need verification. The format validator does
+not check label accuracy or challenge eligibility. The public five-minute ground truth must not
+be used to select or tune a model; see [RULES.md](mtah_challenge/RULES.md).
 
 Multi-view command (visualize both videos with ball track and Smart Tagging banners): python.exe multi_view.py --broadcast-video "assets\video\broadcast.mp4" --tactical-video "assets\video\tactical.mp4" --correspondence-csv "assets\frame_correspondence.csv" --detections "assets\ball_detection_first_half_yolo26_sliced.csv" --play --ball-birdseye
 

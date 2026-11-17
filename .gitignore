@@ -16,4 +16,7 @@ assets/detections/players/players_tactical_first_half.csv
 assets/detections/players/players_tracked_bytetrack.csv
 assets/trackings/players/players_tactical.csv
 assets/trackings/players/player_matches.csv
+assets/player_matches.csv
+evaluation/results/*.csv
 assets/detections/players/players_tactical_full_match.csv
+evaluation/
